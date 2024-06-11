@@ -161,7 +161,7 @@ func TestCombineMnemonics(t *testing.T) {
 					v.masterSecret, v.description)
 			}
 		}
-		if i+1 >= 4 {
+		if i+1 >= 10 {
 			break
 		}
 	}

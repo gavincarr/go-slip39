@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"os"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
@@ -30,6 +29,7 @@ const (
 	idExpLengthWords         = 2
 	groupPrefixLengthWords   = idExpLengthWords + 1
 	checksumLengthWords      = 3
+	digestLengthBytes        = 4
 	metadataLengthWords      = idExpLengthWords + 2 + checksumLengthWords
 
 	shift5Bits  = 1 << 5
@@ -53,6 +53,11 @@ var (
 	shift30BitsMask = big.NewInt(shift30Bits)
 	last30BitsMask  = big.NewInt(last30Bits)
 
+	expTable = []int{}
+	logTable = []int{}
+)
+
+var (
 	// ErrInvalidChecksum is returned when the checksum on a mnemonic is invalid
 	ErrInvalidChecksum = errors.New("Invalid checksum")
 
@@ -61,6 +66,9 @@ var (
 
 	// ErrEmptyShareGroup is returned when a share group is empty
 	ErrEmptyShareGroup = errors.New("the share group is empty")
+
+	ErrInvalidMnemonicIndices      = errors.New("invalid set of shares - share indices must be unique")
+	ErrInvalidMnemonicShareLengths = errors.New("invalid set of shares - all share values must have the same length")
 
 	// ErrInvalidMnemonicSharedSecretDigest is returned when a mnemonic has an
 	// invalid shared secret digest
@@ -91,7 +99,7 @@ type shareGroupParameters struct {
 
 type shareStruct struct {
 	shareGroupParameters
-	memberIndex int
+	index       int
 	shareValues []byte
 }
 
@@ -177,7 +185,6 @@ func cipherDecrypt(
 	salt := getSalt(identifier, extendable)
 	for i := roundCount - 1; i >= 0; i-- {
 		f := roundFunction(i, passphrase, iterationExponent, salt, r)
-		fmt.Fprintf(os.Stderr, "cipherDecrypt3: i %d, f %q\n", i, f)
 		l, r = r, xor(l, f)
 	}
 
@@ -443,7 +450,7 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	share.groupIndex = shareParams[0]
 	share.groupThreshold = shareParams[1] + 1
 	share.groupCount = shareParams[2] + 1
-	share.memberIndex = shareParams[3]
+	share.index = shareParams[3]
 	share.memberThreshold = shareParams[4] + 1
 
 	if share.groupCount < share.groupThreshold {
@@ -492,15 +499,102 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 	return groups, nil
 }
 
-func groupRawShares(group shareGroup) []rawShare {
+func (group shareGroup) toRawShares() []rawShare {
 	grs := make([]rawShare, len(group.shares))
 	for i, s := range group.shares {
 		grs[i] = rawShare{
-			x:    s.groupIndex,
+			x:    s.index,
 			data: s.shareValues,
 		}
 	}
 	return grs
+}
+
+func precomputeExpLog() ([]int, []int) {
+	expTable := make([]int, 255)
+	logTable := make([]int, 256)
+
+	poly := 1
+	for i := range 255 {
+		expTable[i] = poly
+		logTable[poly] = i
+
+		// Multiply poly by the polynomial x + 1
+		poly = (poly << 1) ^ poly
+
+		// Reduce poly by x^8 + x^4 + x^3 + x + 1
+		if poly&0x100 != 0 {
+			poly ^= 0x11B
+		}
+	}
+
+	return expTable, logTable
+}
+
+// interpolate returns f(x) given the Shamir shares
+// (x_1, f(x_1)), ... , (x_k, f(x_k))
+func interpolate(shares []rawShare, x int) ([]byte, error) {
+	xCoords := mapset.NewSetWithSize[int](len(shares))
+	shareValueLengths := mapset.NewSetWithSize[int](len(shares))
+	for _, share := range shares {
+		xCoords.Add(share.x)
+		shareValueLengths.Add(len(share.data))
+	}
+
+	if xCoords.Cardinality() != len(shares) {
+		return nil, ErrInvalidMnemonicIndices
+	}
+	if shareValueLengths.Cardinality() != 1 {
+		return nil, ErrInvalidMnemonicShareLengths
+	}
+
+	if xCoords.Contains(x) {
+		for _, share := range shares {
+			if share.x == x {
+				return share.data, nil
+			}
+		}
+	}
+
+	if len(expTable) == 0 {
+		expTable, logTable = precomputeExpLog()
+	}
+
+	// Logarithm of the product of (x_i - x) for i = 1, ... , k.
+	logProd := 0
+	for _, share := range shares {
+		logProd += logTable[share.x^x]
+	}
+	//fmt.Fprintf(os.Stderr, "interpolate1: shares %q, logProd %d\n", shares, logProd)
+
+	length, _ := shareValueLengths.Pop()
+	result := make([]byte, length)
+	for _, share := range shares {
+		// The logarithm of the Lagrange basis polynomial evaluated at x
+		otherLog := 0
+		for _, other := range shares {
+			otherLog += logTable[share.x^other.x]
+		}
+		logBasisEval := (logProd - logTable[share.x^x] - otherLog) % 255
+		// Adjust for python modulo behavior
+		if logBasisEval < 0 {
+			logBasisEval += 255
+		}
+		//fmt.Fprintf(os.Stderr, "interpolate2: logTable %d, otherlog %d, logBasisEval %d\n", logTable[share.x^x], otherLog, logBasisEval)
+
+		intermediateSum := make([]byte, length)
+		copy(intermediateSum, result)
+		for j, shareVal := range share.data {
+			expValue := 0
+			if shareVal != 0 {
+				expValue = expTable[(logTable[shareVal]+logBasisEval)%255]
+			}
+			result[j] = byte(intermediateSum[j] ^ byte(expValue))
+		}
+	}
+	//fmt.Fprintf(os.Stderr, "interpolate3: result %q\n", result)
+
+	return result, nil
 }
 
 func recoverSecret(threshold int, shares []rawShare) ([]byte, error) {
@@ -509,20 +603,20 @@ func recoverSecret(threshold int, shares []rawShare) ([]byte, error) {
 		return shares[0].data, nil
 	}
 
-	var sharedSecret []byte
+	sharedSecret, err := interpolate(shares, secretIndex)
+	if err != nil {
+		return nil, err
+	}
+	digestShare, err := interpolate(shares, digestIndex)
+	if err != nil {
+		return nil, err
+	}
+	digest := digestShare[:digestLengthBytes]
+	randomPart := digestShare[digestLengthBytes:]
 
-	return nil, errors.New("recoverSecret: multi-share support not implemented yet")
-	/*
-		TODO
-		sharedSecret := interpolate(shares, secretIndex)
-		digestShare := interpolate(shares, digestIndex)
-		digest := digestShare[:digestLengthBytes]
-		randomPart := digestShare[digestLengthBytes:]
-
-		if digest != createDigest(randomPart, sharedSecret) {
-			return nil, ErrInvalidMnemonicSharedSecretDigest
-		}
-	*/
+	if digest != createDigest(randomPart, sharedSecret) {
+		return nil, ErrInvalidMnemonicSharedSecretDigest
+	}
 
 	return sharedSecret, nil
 }
@@ -571,25 +665,18 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 
 	groupShares := make([]rawShare, 0, len(groups))
 	for groupIndex, group := range groups {
-		grs := groupRawShares(group)
+		grs := group.toRawShares()
+		//fmt.Fprintf(os.Stderr, "recoverEMS: groupIndex %d, grs %v\n", groupIndex, grs)
 		secret, err := recoverSecret(group.shares[0].memberThreshold, grs)
 		if err != nil {
 			return ems, err
 		}
-		/*
-			fmt.Fprintf(os.Stderr,
-				"recoverEMS: groupIndex %d, groupRawShares %v, secret %v\n",
-				groupIndex, grs, secret)
-		*/
+		//fmt.Fprintf(os.Stderr, "recoverEMS: groupIndex %d, groupRawShares %v, secret %v\n", groupIndex, grs, secret)
 		groupShares = append(groupShares, rawShare{
 			x:    groupIndex,
 			data: secret,
 		})
 	}
-	/*
-		fmt.Fprintf(os.Stderr,
-			"recoverEMS: groupShares %v\n", groupShares)
-	*/
 
 	ciphertext, err := recoverSecret(params.groupThreshold, groupShares)
 	if err != nil {
@@ -616,12 +703,12 @@ func CombineMnemonics(mnemonics []string, passphrase []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(os.Stderr, "CombineMnemonics: %d mnemonic(s), %d group(s), %d share(s) in group 1\n", len(mnemonics), len(groups), len(groups[0].shares))
+	//fmt.Fprintf(os.Stderr, "CombineMnemonics: %d mnemonic(s), %d group(s), %d share(s) in group 1, groups %v\n", len(mnemonics), len(groups), len(groups[0].shares), groups)
 	ems, err := recoverEMS(groups)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(os.Stderr, "CombineMnemonics: ems %v\n", ems)
+	//fmt.Fprintf(os.Stderr, "CombineMnemonics: ems %v\n", ems)
 	masterSecret, err := ems.decrypt(passphrase)
 	if err != nil {
 		return nil, err
