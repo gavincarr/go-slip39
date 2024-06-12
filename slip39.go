@@ -6,6 +6,8 @@
 package slip39
 
 import (
+	"bytes"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -59,15 +61,20 @@ var (
 
 var (
 	// ErrInvalidChecksum is returned when the checksum on a mnemonic is invalid
-	ErrInvalidChecksum = errors.New("Invalid checksum")
+	ErrInvalidChecksum = errors.New("invalid checksum")
 
 	// ErrInvalidMnemonic is returned when a mnemonic is invalid
-	ErrInvalidMnemonic = errors.New("Invalid mnemonic")
+	ErrInvalidMnemonic = errors.New("invalid mnemonic")
 
 	// ErrEmptyShareGroup is returned when a share group is empty
 	ErrEmptyShareGroup = errors.New("the share group is empty")
 
-	ErrInvalidMnemonicIndices      = errors.New("invalid set of shares - share indices must be unique")
+	// ErrInvalidMnemonicIndices is returned when a set of shares contains
+	// non-unique share indices
+	ErrInvalidMnemonicIndices = errors.New("invalid set of shares - share indices must be unique")
+
+	// ErrInvalidMnemonicShareLengths is returned with a set of shares include
+	// shares with different lengths
 	ErrInvalidMnemonicShareLengths = errors.New("invalid set of shares - all share values must have the same length")
 
 	// ErrInvalidMnemonicSharedSecretDigest is returned when a mnemonic has an
@@ -390,6 +397,7 @@ func (s shareStruct) words() ([]string, error) {
 	return words, nil
 }
 
+/*
 func SplitSecret(threshold, numShares int, secret []byte) ([]int, error) {
 	if len(secret) < 128/8 || len(secret)%2 != 0 {
 		return nil, ErrInvalidMasterSecretLength
@@ -397,6 +405,7 @@ func SplitSecret(threshold, numShares int, secret []byte) ([]int, error) {
 
 	return []int{}, nil
 }
+*/
 
 func parseShare(mnemonic string) (shareStruct, error) {
 	var share shareStruct
@@ -407,7 +416,7 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	}
 
 	paddingLen := (radixBits * (len(mnemonicData) - metadataLengthWords)) % 16
-	//fmt.Printf("paddingLen: %d\n", paddingLen)
+	//fmt.Fprintf(os.Stderr, "paddingLen: %d\n", paddingLen)
 	if paddingLen > 8 {
 		return share, ErrInvalidMnemonic
 	}
@@ -421,11 +430,11 @@ func parseShare(mnemonic string) (shareStruct, error) {
 		}
 		data[i] = index
 	}
-	//fmt.Printf("data: %v\n", data)
+	//fmt.Fprintf(os.Stderr, "data: %v\n", data)
 
 	idExpData := data[:idExpLengthWords]
 	idExpInt := intFromWordIndices(idExpData)
-	//fmt.Printf("idExpInt: %d\n", idExpInt)
+	//fmt.Fprintf(os.Stderr, "idExpInt: %d\n", idExpInt)
 
 	share.identifier = idExpInt >>
 		(extendableFlagLengthBits + iterationExpLengthBits)
@@ -435,12 +444,11 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	// Verify checksum
 	cs := share.customizationString()
 	/*
-		fmt.Printf("createChecksum: %v\n",
+		fmt.Fprintf(os.Stderr, "createChecksum: %v\n",
 			rs1024CreateChecksum(customizationStringOriginal,
 				data[:len(data)-checksumLengthWords]))
 	*/
 	if !rs1024VerifyChecksum(cs, data) {
-		//fmt.Printf("invalid checksum!\n")
 		return share, ErrInvalidChecksum
 	}
 
@@ -461,14 +469,19 @@ func parseShare(mnemonic string) (shareStruct, error) {
 
 	valueData := data[idExpLengthWords+2 : len(data)-checksumLengthWords]
 	valueByteCount := bitsToBytes(radixBits*len(valueData) - paddingLen)
+	//fmt.Fprintf(os.Stderr, "valueByteCount: %d\n", valueByteCount)
 	valueInt := bigintFromWordIndices(valueData)
-	//fmt.Printf("valueInt: %d\n", valueInt)
-	share.shareValues = valueInt.Bytes()
-	if len(share.shareValues) > valueByteCount {
+	//fmt.Fprintf(os.Stderr, "valueInt: %d\n", valueInt)
+	valueBytes := valueInt.Bytes()
+	if len(valueBytes) > valueByteCount {
 		return share,
 			fmt.Errorf(`Invalid mnemonic padding for "%s ..."`,
 				strings.Join(mnemonicData[:idExpLengthWords+2], " "))
 	}
+	valueBytes = make([]byte, valueByteCount)
+	valueInt.FillBytes(valueBytes)
+	share.shareValues = valueBytes
+	//fmt.Fprintf(os.Stderr, "shareValues: %q (len %d)\n", share.shareValues, len(share.shareValues))
 
 	return share, nil
 }
@@ -483,6 +496,7 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 		if err != nil {
 			return nil, err
 		}
+		//fmt.Fprintf(os.Stderr, "newShareGroupMap: share %v\n", share)
 		commonParams.Add(share.shareCommonParameters)
 		group, ok := groups[share.groupIndex]
 		if !ok {
@@ -494,7 +508,7 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 	}
 	if commonParams.Cardinality() != 1 {
 		return nil,
-			fmt.Errorf("All mnemonics must begin with the same %d words, must have the same group threshold and the same group count.", idExpLengthWords)
+			fmt.Errorf("all mnemonics must begin with the same %d words, must have the same group threshold and the same group count", idExpLengthWords)
 	}
 	return groups, nil
 }
@@ -545,6 +559,7 @@ func interpolate(shares []rawShare, x int) ([]byte, error) {
 		return nil, ErrInvalidMnemonicIndices
 	}
 	if shareValueLengths.Cardinality() != 1 {
+		//fmt.Fprintf(os.Stderr, "interpolate: shares %v, shareValueLengths %v\n", shares, shareValueLengths)
 		return nil, ErrInvalidMnemonicShareLengths
 	}
 
@@ -597,6 +612,12 @@ func interpolate(shares []rawShare, x int) ([]byte, error) {
 	return result, nil
 }
 
+func createDigest(randomData, sharedSecret []byte) []byte {
+	digest := hmac.New(sha256.New, randomData)
+	digest.Write(sharedSecret)
+	return digest.Sum(nil)[:digestLengthBytes]
+}
+
 func recoverSecret(threshold int, shares []rawShare) ([]byte, error) {
 	// If the threshold is 1, then the digest of the shared secret is not used
 	if threshold == 1 {
@@ -614,7 +635,9 @@ func recoverSecret(threshold int, shares []rawShare) ([]byte, error) {
 	digest := digestShare[:digestLengthBytes]
 	randomPart := digestShare[digestLengthBytes:]
 
-	if digest != createDigest(randomPart, sharedSecret) {
+	checkDigest := createDigest(randomPart, sharedSecret)
+	if bytes.Compare(digest, checkDigest) != 0 {
+		//fmt.Fprintf(os.Stderr, "recoverSecret: randomPart %q, sharedSecret %q, digest %q, checkDigest %q \n", randomPart, sharedSecret, digest, checkDigest)
 		return nil, ErrInvalidMnemonicSharedSecretDigest
 	}
 
@@ -691,10 +714,10 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	}, nil
 }
 
-// CombineMnemonics combines mnemonics into the master secret which was
-// originally split into shares using Shamir's Secret Sharing Scheme.
-// The master secret may be optionally protected with a passphrase.
-func CombineMnemonics(mnemonics []string, passphrase []byte) ([]byte, error) {
+// CombineMnemonicsWithPassphrase combines mnemonics protected with a passphrase
+// to give the master secret which was originally split into shares using
+// Shamir's Secret Sharing Scheme,
+func CombineMnemonicsWithPassphrase(mnemonics []string, passphrase []byte) ([]byte, error) {
 	if len(mnemonics) == 0 {
 		return nil, errors.New("the list of mnemonics is empty")
 	}
@@ -703,16 +726,22 @@ func CombineMnemonics(mnemonics []string, passphrase []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Fprintf(os.Stderr, "CombineMnemonics: %d mnemonic(s), %d group(s), %d share(s) in group 1, groups %v\n", len(mnemonics), len(groups), len(groups[0].shares), groups)
+	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: %d mnemonic(s), %d group(s), %d share(s) in group 1, groups %v\n", len(mnemonics), len(groups), len(groups[0].shares), groups)
 	ems, err := recoverEMS(groups)
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Fprintf(os.Stderr, "CombineMnemonics: ems %v\n", ems)
+	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: ems %v\n", ems)
 	masterSecret, err := ems.decrypt(passphrase)
 	if err != nil {
 		return nil, err
 	}
 
 	return masterSecret, nil
+}
+
+// CombineMnemonics combines mnemonics into the master secret which was
+// originally split into shares using Shamir's Secret Sharing Scheme,
+func CombineMnemonics(mnemonics []string) ([]byte, error) {
+	return CombineMnemonicsWithPassphrase(mnemonics, []byte{})
 }

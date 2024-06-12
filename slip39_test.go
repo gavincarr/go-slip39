@@ -4,13 +4,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 const (
 	testPassphrase = "TREZOR"
-	//testPassphrase = ""
+)
+
+var (
+	reRange = regexp.MustCompile(`^(?:(\d+)?(-))?(\d+)$`)
 )
 
 type vector struct {
@@ -123,7 +128,7 @@ func TestParseShareWords(t *testing.T) {
 	}
 }
 
-func TestCombineMnemonics(t *testing.T) {
+func TestCombineMnemonicsWithPassphrase(t *testing.T) {
 	t.Parallel()
 
 	vectors, err := loadVectors(t)
@@ -131,21 +136,62 @@ func TestCombineMnemonics(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	finalArg := os.Args[len(os.Args)-1]
+	matches := reRange.FindStringSubmatch(finalArg)
+	var m1, m3 int
+	var m2 string
+	if matches != nil {
+		if matches[1] != "" {
+			m1, err = strconv.Atoi(matches[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if matches[2] != "" {
+			m2 = matches[2]
+		}
+		if matches[3] != "" {
+			m3, err = strconv.Atoi(matches[3])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	to := m3
+	from := 0
+	if m1 > 0 {
+		// range with both ends defined e.g. 10-43
+		from = m1
+	} else if m2 != "" {
+		// range with right-end-only defined e.g. -43
+		from = 1
+	} else {
+		// simple number e.g. 43
+		from = m3
+	}
+
 	for i, v := range vectors {
+		if from > 0 && i+1 < from {
+			continue
+		}
+
 		mnemonics := []string{}
 		for _, m := range v.shares {
 			mnemonics = append(mnemonics, m)
 		}
-		masterSecretBytes, err := CombineMnemonics(mnemonics, []byte(testPassphrase))
+		masterSecretBytes, err := CombineMnemonicsWithPassphrase(
+			mnemonics, []byte(testPassphrase),
+		)
 		if err != nil {
 			// If masterSecret is empty, then an error is expected
-			if v.masterSecret == "" {
-				t.Logf("CombineMnemonics returned (expected) error:%s (%q)",
-					err.Error(), v.description)
-			} else {
+			if v.masterSecret != "" {
 				t.Errorf("CombineMnemonics returned (unexpected) error: %s (%q)",
 					err.Error(), v.description)
-
+				/*
+					} else {
+						t.Logf("CombineMnemonics returned (expected) error:%s (%q)",
+							err.Error(), v.description)
+				*/
 			}
 		} else if v.masterSecret == "" {
 			t.Errorf("CombineMnemonics unexpectedly succeeded (%q)",
@@ -156,13 +202,17 @@ func TestCombineMnemonics(t *testing.T) {
 				t.Errorf("CombineMnemonics returned bad masterSecret (got %v, want %q, for %q)",
 					masterSecret, v.masterSecret, v.description)
 
-			} else {
-				t.Logf("CombineMnemonics success: %s (%q)",
-					v.masterSecret, v.description)
+				/*
+					} else {
+						t.Logf("CombineMnemonics success: %s (%q)",
+							v.masterSecret, v.description)
+				*/
 			}
 		}
-		if i+1 >= 10 {
+
+		if to > 0 && i+1 >= to {
 			break
 		}
+
 	}
 }
