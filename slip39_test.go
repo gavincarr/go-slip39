@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"gonum.org/v1/gonum/stat/combin"
 )
 
 const (
@@ -25,18 +27,25 @@ type vector struct {
 	rootPrivateKey string
 }
 
-func loadVectors(t *testing.T) ([]vector, error) {
+type secret struct {
+	Description       string
+	MasterSecret      string                  `json:"master_secret"`
+	GroupThreshold    int                     `json:"group_threshold"`
+	MemberGroupParams []MemberGroupParameters `json:"member_group_params"`
+}
+
+func mustLoadVectors(t *testing.T) []vector {
 	t.Helper()
 
 	data, err := os.ReadFile("vectors.json")
 	if err != nil {
-		return nil, err
+		t.Fatal(err)
 	}
 
 	var records [][]interface{}
 	err = json.Unmarshal(data, &records)
 	if err != nil {
-		return nil, err
+		t.Fatal(err)
 	}
 
 	vectors := make([]vector, len(records))
@@ -53,7 +62,65 @@ func loadVectors(t *testing.T) ([]vector, error) {
 		vectors[i] = v
 	}
 
-	return vectors, nil
+	return vectors
+}
+
+func mustLoadSecrets(t *testing.T) []secret {
+	t.Helper()
+
+	data, err := os.ReadFile("secrets.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var secrets []secret
+	err = json.Unmarshal(data, &secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return secrets
+}
+
+func parseArgs(t *testing.T) (int, int) {
+	t.Helper()
+
+	finalArg := os.Args[len(os.Args)-1]
+	matches := reRange.FindStringSubmatch(finalArg)
+	var m1, m3 int
+	var m2 string
+	var err error
+	if matches != nil {
+		if matches[1] != "" {
+			m1, err = strconv.Atoi(matches[1])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if matches[2] != "" {
+			m2 = matches[2]
+		}
+		if matches[3] != "" {
+			m3, err = strconv.Atoi(matches[3])
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	to := m3
+	from := 0
+	if m1 > 0 {
+		// range with both ends defined e.g. 10-43
+		from = m1
+	} else if m2 != "" {
+		// range with right-end-only defined e.g. -43
+		from = 1
+	} else {
+		// simple number e.g. 43
+		from = m3
+	}
+
+	return from, to
 }
 
 // Text xor
@@ -128,47 +195,35 @@ func TestParseShareWords(t *testing.T) {
 	}
 }
 
-func TestCombineMnemonicsWithPassphrase(t *testing.T) {
+// Test round-tripping cipherEncrypt and cipherDecrypt
+func TestCipherEncryptDecrypt(t *testing.T) {
 	t.Parallel()
 
-	vectors, err := loadVectors(t)
-	if err != nil {
-		t.Fatal(err)
+	var tests = []struct {
+		secret string
+		id     int
+	}{
+		{"bb54aac4b89dc868ba37d9cc21b2cece", 342},
 	}
 
-	finalArg := os.Args[len(os.Args)-1]
-	matches := reRange.FindStringSubmatch(finalArg)
-	var m1, m3 int
-	var m2 string
-	if matches != nil {
-		if matches[1] != "" {
-			m1, err = strconv.Atoi(matches[1])
-			if err != nil {
-				t.Fatal(err)
-			}
+	for _, tc := range tests {
+		encrypted, err := cipherEncrypt([]byte(tc.secret), []byte(testPassphrase), 1, tc.id, true)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if matches[2] != "" {
-			m2 = matches[2]
-		}
-		if matches[3] != "" {
-			m3, err = strconv.Atoi(matches[3])
-			if err != nil {
-				t.Fatal(err)
-			}
+		t.Logf("encrypted: %q", encrypted)
+		decrypted, err := cipherDecrypt(encrypted, []byte(testPassphrase), 1, tc.id, true)
+		if string(decrypted) != tc.secret {
+			t.Errorf("want %q, got %q", tc.secret, string(decrypted))
 		}
 	}
-	to := m3
-	from := 0
-	if m1 > 0 {
-		// range with both ends defined e.g. 10-43
-		from = m1
-	} else if m2 != "" {
-		// range with right-end-only defined e.g. -43
-		from = 1
-	} else {
-		// simple number e.g. 43
-		from = m3
-	}
+}
+
+func TestCombineMnemonics(t *testing.T) {
+	t.Parallel()
+
+	vectors := mustLoadVectors(t)
+	from, to := parseArgs(t)
 
 	for i, v := range vectors {
 		if from > 0 && i+1 < from {
@@ -213,6 +268,86 @@ func TestCombineMnemonicsWithPassphrase(t *testing.T) {
 		if to > 0 && i+1 >= to {
 			break
 		}
+	}
+}
 
+func selectShares(selection []int, shares []string) []string {
+	selected := make([]string, len(selection))
+	for i, j := range selection {
+		selected[i] = shares[j]
+	}
+	return selected
+}
+
+func selectionString(selection []int) string {
+	var s []string
+	for _, i := range selection {
+		s = append(s, strconv.Itoa(i))
+	}
+	return strings.Join(s, ",")
+}
+
+// Test round-tripping GenerateMnemonics/CombineMnemonics
+func TestGenerateMnemonics(t *testing.T) {
+	t.Parallel()
+
+	secrets := mustLoadSecrets(t)
+	from, to := parseArgs(t)
+
+	for i, s := range secrets {
+		if from > 0 && i+1 < from {
+			continue
+		}
+		//fmt.Fprintf(os.Stderr, "secret: %v\n", s)
+
+		masterSecretBytes, err := hex.DecodeString(s.MasterSecret)
+		if err != nil {
+			t.Errorf("hex.DecodeString returned error: %s", err.Error())
+		}
+
+		groupMnemonics, err := GenerateMnemonicsWithOptions(
+			s.GroupThreshold, s.MemberGroupParams,
+			masterSecretBytes, []byte(testPassphrase),
+			true, 0, // for some reason the python cli defaults to exponent=0
+		)
+		if err != nil {
+			t.Error(err)
+		}
+		t.Logf("groupMnemonics (%d group(s)): %v\n",
+			len(groupMnemonics), groupMnemonics)
+
+		for i, mnemonics := range groupMnemonics {
+			// Test all threshold combinations of seeds
+			mgp := s.MemberGroupParams[i]
+			list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+			for _, selection := range list {
+				selected := selectShares(selection, mnemonics)
+				//fmt.Fprintf(os.Stderr, "selected: %s\n", strings.Join(selected, " / "))
+
+				masterSecretBytes, err = CombineMnemonicsWithPassphrase(
+					selected, []byte(testPassphrase),
+				)
+				if err != nil {
+					t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v", err.Error(), selectionString(selection), mnemonics)
+					continue
+				}
+
+				masterSecret := hex.EncodeToString(masterSecretBytes)
+				if err != nil {
+					t.Errorf("hex.EncodeToString returned error: %s", err.Error())
+				}
+
+				if masterSecret != s.MasterSecret {
+					t.Errorf("masterSecret mismatch: got %q, want %q",
+						string(masterSecret), s.MasterSecret)
+				} else {
+					t.Logf("masterSecret match with mnemonics [%s]: %v", selectionString(selection), mnemonics)
+				}
+			}
+		}
+
+		if to > 0 && i+1 >= to {
+			break
+		}
 	}
 }

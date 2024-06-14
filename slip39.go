@@ -8,11 +8,13 @@ package slip39
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
@@ -30,9 +32,11 @@ const (
 	iterationExpLengthBits   = 4
 	idExpLengthWords         = 2
 	groupPrefixLengthWords   = idExpLengthWords + 1
+	maxShareCount            = 16
 	checksumLengthWords      = 3
 	digestLengthBytes        = 4
 	metadataLengthWords      = idExpLengthWords + 2 + checksumLengthWords
+	minStrengthBits          = 128
 
 	shift5Bits  = 1 << 5
 	shift10Bits = 1 << 10
@@ -69,6 +73,18 @@ var (
 	// ErrEmptyShareGroup is returned when a share group is empty
 	ErrEmptyShareGroup = errors.New("the share group is empty")
 
+	// ErrMaxShareCountExceeded
+	ErrMaxShareCountExceeded = fmt.Errorf("the number of shares cannot exceed %d", maxShareCount)
+
+	// ErrInvalidGroupThreshold is returned when the group threshold is invalid
+	ErrInvalidGroupThreshold = errors.New("group threshold must be a positive integers and must not exceed the number of groups")
+
+	// ErrInvalidThreshold is returned when the threshold is invalid
+	ErrInvalidThreshold = errors.New("the requested threshold must be a positive integers and must not exceed the number of shares")
+
+	// ErrInvalidSingleMemberThreshold is returned when the group threshold is invalid
+	ErrInvalidSingleMemberThreshold = errors.New("cannot create multiple member shares with member threshold 1 - use 1-of-1 member sharing instead")
+
 	// ErrInvalidMnemonicIndices is returned when a set of shares contains
 	// non-unique share indices
 	ErrInvalidMnemonicIndices = errors.New("invalid set of shares - share indices must be unique")
@@ -83,12 +99,25 @@ var (
 
 	// ErrInvalidMasterSecretLength is returned when trying to use a (decrypted)
 	// master secret with an invalid length
-	ErrInvalidMasterSecretLength = errors.New("master secret length must be >= 128 and be a multiple of 16")
+	ErrInvalidMasterSecretLength = errors.New("master secret length must be >= 16B and be a multiple of 2")
 
 	// ErrInvalidEncryptedMasterSecretLength is returned when an encrypted master
 	// secret has an invalid length
 	ErrInvalidEncryptedMasterSecretLength = errors.New("the length of the encrypted master secret must be an even number")
+
+	// ErrInvalidPassphrase is returned when a passphrase contains invalid
+	// characters
+	ErrInvalidPassphrase = errors.New("the passphrase must contain only printable ASCII characters (code points 32-126)")
 )
+
+// MemberGroupParameters define the (MemberThreshold, MemberCount) pairs required
+// for the share groups created by GenerateMnemonics. MemberCount is the number
+// of shares to generate for the group, and MemberThreshold is the number of
+// members required to reconstruct the group secret.
+type MemberGroupParameters struct {
+	MemberThreshold int `json:"member_threshold"`
+	MemberCount     int `json:"member_count"`
+}
 
 type shareCommonParameters struct {
 	identifier        int
@@ -126,6 +155,26 @@ type encryptedMasterSecret struct {
 	extendable        bool
 	iterationExponent int
 	ciphertext        []byte
+}
+
+func newEncryptedMasterSecret(
+	masterSecret, passphrase []byte,
+	identifier int,
+	extendable bool,
+	iteration_exponent int,
+) (encryptedMasterSecret, error) {
+	ciphertext, err := cipherEncrypt(
+		masterSecret, passphrase, iteration_exponent, identifier, extendable,
+	)
+	if err != nil {
+		return encryptedMasterSecret{}, err
+	}
+	return encryptedMasterSecret{
+		identifier:        identifier,
+		extendable:        extendable,
+		iterationExponent: iteration_exponent,
+		ciphertext:        ciphertext,
+	}, nil
 }
 
 func (ems encryptedMasterSecret) decrypt(passphrase []byte) ([]byte, error) {
@@ -176,6 +225,25 @@ func getSalt(identifier int, extendable bool) []byte {
 	idBytes := [2]byte{}
 	binary.BigEndian.PutUint16(idBytes[:], uint16(identifier))
 	return append([]byte(customizationStringOriginal), idBytes[0], idBytes[1])
+}
+
+func cipherEncrypt(
+	masterSecret, passphrase []byte,
+	iterationExponent, identifier int,
+	extendable bool,
+) ([]byte, error) {
+	if len(masterSecret)%2 != 0 {
+		return nil, ErrInvalidMasterSecretLength
+	}
+
+	l := masterSecret[:len(masterSecret)/2]
+	r := masterSecret[len(masterSecret)/2:]
+	salt := getSalt(identifier, extendable)
+	for i := range roundCount {
+		f := roundFunction(i, passphrase, iterationExponent, salt, r)
+		l, r = r, xor(l, f)
+	}
+	return append(r, l...), nil
 }
 
 func cipherDecrypt(
@@ -352,7 +420,7 @@ func (s shareStruct) encodeShareParams() []int {
 	val <<= 4
 	val += s.groupCount - 1
 	val <<= 4
-	val += s.groupIndex
+	val += s.index
 	val <<= 4
 	val += s.memberThreshold - 1
 	// Group parameters are 2 words
@@ -397,15 +465,13 @@ func (s shareStruct) words() ([]string, error) {
 	return words, nil
 }
 
-/*
-func SplitSecret(threshold, numShares int, secret []byte) ([]int, error) {
-	if len(secret) < 128/8 || len(secret)%2 != 0 {
-		return nil, ErrInvalidMasterSecretLength
+func (s shareStruct) mnemonic() (string, error) {
+	words, err := s.words()
+	if err != nil {
+		return "", err
 	}
-
-	return []int{}, nil
+	return strings.Join(words, " "), nil
 }
-*/
 
 func parseShare(mnemonic string) (shareStruct, error) {
 	var share shareStruct
@@ -556,6 +622,7 @@ func interpolate(shares []rawShare, x int) ([]byte, error) {
 	}
 
 	if xCoords.Cardinality() != len(shares) {
+		fmt.Fprintf(os.Stderr, "interpolate: shares %v, xCoords %v\n", shares, xCoords)
 		return nil, ErrInvalidMnemonicIndices
 	}
 	if shareValueLengths.Cardinality() != 1 {
@@ -636,12 +703,154 @@ func recoverSecret(threshold int, shares []rawShare) ([]byte, error) {
 	randomPart := digestShare[digestLengthBytes:]
 
 	checkDigest := createDigest(randomPart, sharedSecret)
+	//fmt.Fprintf(os.Stderr, "recoverSecret: threshold %d, digestShare %q, randomPart %q, sharedSecret %q, digest %q, checkDigest %q \n", threshold, digestShare, randomPart, sharedSecret, digest, checkDigest)
 	if bytes.Compare(digest, checkDigest) != 0 {
-		//fmt.Fprintf(os.Stderr, "recoverSecret: randomPart %q, sharedSecret %q, digest %q, checkDigest %q \n", randomPart, sharedSecret, digest, checkDigest)
 		return nil, ErrInvalidMnemonicSharedSecretDigest
 	}
 
 	return sharedSecret, nil
+}
+
+func splitSecret(
+	threshold int,
+	shareCount int,
+	sharedSecret []byte,
+) ([]rawShare, error) {
+	if threshold < 1 || threshold > shareCount {
+		return nil, ErrInvalidThreshold
+	}
+	if shareCount > maxShareCount {
+		return nil, ErrMaxShareCountExceeded
+	}
+
+	// If the threshold is 1, then the digest of the shared secret is not used
+	if threshold == 1 {
+		shares := make([]rawShare, shareCount)
+		for i := range shareCount {
+			share := rawShare{
+				x:    i,
+				data: sharedSecret,
+			}
+			//fmt.Fprintf(os.Stderr, "splitSecret: share.data %q (%d)\n", share.data, len(share.data))
+			shares[i] = share
+		}
+		return shares, nil
+	}
+
+	randomShareCount := threshold - 2
+
+	shares := make([]rawShare, 0, shareCount)
+	for i := range randomShareCount {
+		randomBytes := make([]byte, len(sharedSecret))
+		_, err := rand.Read(randomBytes)
+		if err != nil {
+			return shares,
+				fmt.Errorf("error reading randomBytes bytes: %s", err.Error())
+		}
+		share := rawShare{
+			x:    i,
+			data: randomBytes,
+		}
+		shares = append(shares, share)
+	}
+	//fmt.Fprintf(os.Stderr, "splitSecret: shares1 %v\n", shares)
+	baseShares := make([]rawShare, len(shares), shareCount)
+	copy(baseShares, shares)
+
+	randomPart := make([]byte, len(sharedSecret)-digestLengthBytes)
+	_, err := rand.Read(randomPart)
+	if err != nil {
+		return shares,
+			fmt.Errorf("error reading randomPart bytes: %s", err.Error())
+	}
+	digest := createDigest(randomPart, sharedSecret)
+	//fmt.Fprintf(os.Stderr, "splitSecret: randomPart %q, sharedSecret %q, digest %q\n", randomPart, sharedSecret, digest)
+
+	baseShares = append(baseShares, rawShare{
+		x: digestIndex, data: append(digest, randomPart...),
+	})
+	baseShares = append(baseShares, rawShare{
+		x: secretIndex, data: sharedSecret,
+	})
+
+	for i := randomShareCount; i < shareCount; i++ {
+		data, err := interpolate(baseShares, i)
+		if err != nil {
+			return shares, fmt.Errorf("splitSecret interpolate error: %s", err)
+		}
+		//fmt.Fprintf(os.Stderr, "splitSecret: interpolate [%d] %q\n", i, data)
+
+		shares = append(shares, rawShare{
+			x: i, data: data,
+		})
+	}
+	//fmt.Fprintf(os.Stderr, "splitSecret: shares[%d] %q\n", s.x, s.data)
+
+	return shares, nil
+}
+
+func splitEMS(
+	groupThreshold int,
+	mgplist []MemberGroupParameters,
+	ems encryptedMasterSecret,
+) ([][]shareStruct, error) {
+	// TODO: test all these error conditions
+	if len(ems.ciphertext)*8 < minStrengthBits {
+		return nil, ErrInvalidMasterSecretLength
+	}
+	if groupThreshold > len(mgplist) {
+		return nil, ErrInvalidGroupThreshold
+	}
+	for _, mgp := range mgplist {
+		if mgp.MemberThreshold == 1 && mgp.MemberCount > 1 {
+			return nil, ErrInvalidSingleMemberThreshold
+		}
+	}
+	//fmt.Fprintf(os.Stderr, "splitEMS: groupThreshold %d, mgplist %v, ems.ciphertext %q\n", groupThreshold, mgplist, ems.ciphertext)
+
+	groupShares, err := splitSecret(groupThreshold, len(mgplist), ems.ciphertext)
+	if err != nil {
+		return nil, err
+	}
+
+	groupedShares := make([][]shareStruct, 0, len(mgplist))
+	for groupIndex, groupShare := range groupShares {
+		mgp := mgplist[groupIndex]
+		rawMemberShares, err := splitSecret(
+			mgp.MemberThreshold, mgp.MemberCount, groupShare.data,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		memberShares := make([]shareStruct, 0, len(rawMemberShares))
+		extendable := 1
+		if !ems.extendable {
+			extendable = 0
+		}
+		sgp := shareGroupParameters{
+			shareCommonParameters: shareCommonParameters{
+				identifier:        ems.identifier,
+				extendable:        extendable,
+				iterationExponent: ems.iterationExponent,
+				groupThreshold:    groupThreshold,
+				groupCount:        len(mgplist),
+			},
+			groupIndex:      groupIndex,
+			memberThreshold: mgp.MemberThreshold,
+		}
+		for memberIndex, value := range rawMemberShares {
+			memberShares = append(memberShares, shareStruct{
+				shareGroupParameters: sgp,
+				index:                memberIndex,
+				shareValues:          value.data,
+			})
+		}
+		groupedShares = append(groupedShares, memberShares)
+	}
+	//fmt.Fprintf(os.Stderr, "splitEMS: groupedShares %v\n", groupedShares)
+
+	return groupedShares, nil
 }
 
 // recoverEMS combines the shares in shareGroupMap, recovers the group metadata,
@@ -714,10 +923,13 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	}, nil
 }
 
-// CombineMnemonicsWithPassphrase combines mnemonics protected with a passphrase
+// CombineMnemonicWithPassphrases combines mnemonics protected with a passphrase
 // to give the master secret which was originally split into shares using
 // Shamir's Secret Sharing Scheme,
-func CombineMnemonicsWithPassphrase(mnemonics []string, passphrase []byte) ([]byte, error) {
+func CombineMnemonicsWithPassphrase(
+	mnemonics []string,
+	passphrase []byte,
+) ([]byte, error) {
 	if len(mnemonics) == 0 {
 		return nil, errors.New("the list of mnemonics is empty")
 	}
@@ -741,7 +953,118 @@ func CombineMnemonicsWithPassphrase(mnemonics []string, passphrase []byte) ([]by
 }
 
 // CombineMnemonics combines mnemonics into the master secret which was
-// originally split into shares using Shamir's Secret Sharing Scheme,
+// originally split into shares using Shamir's Secret Sharing Scheme
+// (without a passphrase).
+//
+// The CombineMnenonics functions are the standard entry points for recovering
+// the master secret from a set of slip39 mnemonics.
 func CombineMnemonics(mnemonics []string) ([]byte, error) {
 	return CombineMnemonicsWithPassphrase(mnemonics, []byte{})
+}
+
+func checkPassphrase(passphrase []byte) error {
+	for _, c := range passphrase {
+		if c < 32 || c > 126 {
+			return ErrInvalidPassphrase
+		}
+	}
+	return nil
+}
+
+// randomIdentifier returns a random idLengthBits identifier
+func randomIdentifier() (int, error) {
+	i, err := rand.Int(rand.Reader, big.NewInt(1<<idLengthBits))
+	if err != nil {
+		return -1, err
+	}
+	return int(i.Int64()) & ((1 << idLengthBits) - 1), nil
+}
+
+// GenerateMnemonicsWithOptions splits masterSecret into mnemonic shares
+// using Shamir's secret sharing scheme.
+// group_threshold is the number of groups required to reconstruct the master
+// secret.
+// groups is a slice of MemberGroupParameters, which contain ( MemberThreshold,
+// MemberCount ) pairs for each group, where MemberCount is the number of
+// shares to generate for the group, and MemberThreshold is the number of
+// members required to reconstruct the group secret.
+// masterSecret is the secret to split into shares, and passphrase is an
+// optional passphrase to protect the shares.
+// extendable is a boolean flag indicating whether the set of shares is
+// 'extendable', allowing additional sets of shares to be created later
+// for the same master secret (and passphrase, if used). Defaults to true.
+// iterationExponent is the exponent used to derive the iteration count used
+// in the PBKDF2 key derivation function. The number of iterations is
+// calculated as 10000 * 2^iterationExponent. Defaults to 1.
+func GenerateMnemonicsWithOptions(
+	groupThreshold int,
+	groups []MemberGroupParameters,
+	masterSecret []byte,
+	passphrase []byte,
+	extendable bool,
+	iterationExponent int,
+) ([][]string, error) {
+	if err := checkPassphrase(passphrase); err != nil {
+		return nil, err
+	}
+
+	identifier, err := randomIdentifier()
+	ems, err := newEncryptedMasterSecret(
+		masterSecret, passphrase, identifier, extendable, iterationExponent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	//fmt.Fprintf(os.Stderr, "GenerateMnemonicsWithOptions ems: %v\n", ems)
+
+	groupedShares, err := splitEMS(groupThreshold, groups, ems)
+	if err != nil {
+		return nil, err
+	}
+
+	groupMnemonics := make([][]string, 0, len(groupedShares))
+	for _, group := range groupedShares {
+		mnemonics := make([]string, 0, len(group))
+		for _, share := range group {
+			mnemonic, err := share.mnemonic()
+			if err != nil {
+				return nil, err
+			}
+			//fmt.Fprintf(os.Stderr, "GenerateMnemonics: share %v, mnemonic %q\n", share, mnemonic)
+			mnemonics = append(mnemonics, mnemonic)
+		}
+		groupMnemonics = append(groupMnemonics, mnemonics)
+	}
+
+	return groupMnemonics, nil
+}
+
+// GenerateMnemonics splits masterSecret into mnemonic shares using Shamir's
+// secret sharing scheme.
+// See GenerateMnemonicsWithOptions for parameter documenantation.
+//
+// The GenerateMnenonics functions are the standard entry points for splitting
+// a master secret into slip39 mnemonic shares.
+func GenerateMnemonics(
+	groupThreshold int,
+	groups []MemberGroupParameters,
+	masterSecret []byte,
+) ([][]string, error) {
+	return GenerateMnemonicsWithOptions(
+		groupThreshold, groups, masterSecret, []byte{}, true, 1,
+	)
+}
+
+// GenerateMnemonicsWithPassphrase splits masterSecret into mnemonic shares
+// protected by a passphrase using Shamir's secret sharing scheme.
+// See GenerateMnemonicsWithOptions for parameter documenantation.
+func GenerateMnemonicsWithPassphrase(
+	groupThreshold int,
+	groups []MemberGroupParameters,
+	masterSecret []byte,
+	passphrase []byte,
+) ([][]string, error) {
+	return GenerateMnemonicsWithOptions(
+		groupThreshold, groups, masterSecret, passphrase, true, 1,
+	)
 }
