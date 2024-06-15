@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"os"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
@@ -73,7 +72,7 @@ var (
 	// ErrEmptyShareGroup is returned when a share group is empty
 	ErrEmptyShareGroup = errors.New("the share group is empty")
 
-	// ErrMaxShareCountExceeded
+	// ErrMaxShareCountExceeded is returned when too many shares are provided
 	ErrMaxShareCountExceeded = fmt.Errorf("the number of shares cannot exceed %d", maxShareCount)
 
 	// ErrInvalidGroupThreshold is returned when the group threshold is invalid
@@ -161,10 +160,10 @@ func newEncryptedMasterSecret(
 	masterSecret, passphrase []byte,
 	identifier int,
 	extendable bool,
-	iteration_exponent int,
+	iterationExponent int,
 ) (encryptedMasterSecret, error) {
 	ciphertext, err := cipherEncrypt(
-		masterSecret, passphrase, iteration_exponent, identifier, extendable,
+		masterSecret, passphrase, iterationExponent, identifier, extendable,
 	)
 	if err != nil {
 		return encryptedMasterSecret{}, err
@@ -172,7 +171,7 @@ func newEncryptedMasterSecret(
 	return encryptedMasterSecret{
 		identifier:        identifier,
 		extendable:        extendable,
-		iterationExponent: iteration_exponent,
+		iterationExponent: iterationExponent,
 		ciphertext:        ciphertext,
 	}, nil
 }
@@ -622,7 +621,7 @@ func interpolate(shares []rawShare, x int) ([]byte, error) {
 	}
 
 	if xCoords.Cardinality() != len(shares) {
-		fmt.Fprintf(os.Stderr, "interpolate: shares %v, xCoords %v\n", shares, xCoords)
+		//fmt.Fprintf(os.Stderr, "interpolate: shares %v, xCoords %v\n", shares, xCoords)
 		return nil, ErrInvalidMnemonicIndices
 	}
 	if shareValueLengths.Cardinality() != 1 {
@@ -923,7 +922,7 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	}, nil
 }
 
-// CombineMnemonicWithPassphrases combines mnemonics protected with a passphrase
+// CombineMnemonicsWithPassphrase combines mnemonics protected with a passphrase
 // to give the master secret which was originally split into shares using
 // Shamir's Secret Sharing Scheme,
 func CombineMnemonicsWithPassphrase(

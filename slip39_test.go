@@ -1,8 +1,10 @@
 package slip39
 
 import (
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"os"
 	"regexp"
 	"strconv"
@@ -271,10 +273,32 @@ func TestCombineMnemonics(t *testing.T) {
 	}
 }
 
+func selectRandomShares(mgp MemberGroupParameters, shares []string) []string {
+	if len(shares) == 1 {
+		return []string{shares[0]}
+	}
+	list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+	i, err := rand.Int(rand.Reader, big.NewInt(int64(len(list))))
+	if err != nil {
+		panic("rand.Int failed:" + err.Error())
+	}
+	return selectShares(list[int(i.Int64())], shares)
+}
+
 func selectShares(selection []int, shares []string) []string {
 	selected := make([]string, len(selection))
 	for i, j := range selection {
 		selected[i] = shares[j]
+	}
+	return selected
+}
+
+func selectAndFlattenSets(selection []int, sets [][]string) []string {
+	selected := []string{}
+	for _, j := range selection {
+		for _, s := range sets[j] {
+			selected = append(selected, s)
+		}
 	}
 	return selected
 }
@@ -313,22 +337,60 @@ func TestGenerateMnemonics(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		t.Logf("groupMnemonics (%d group(s)): %v\n",
-			len(groupMnemonics), groupMnemonics)
+		t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
 
-		for i, mnemonics := range groupMnemonics {
-			// Test all threshold combinations of seeds
-			mgp := s.MemberGroupParams[i]
-			list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+		if s.GroupThreshold == 1 {
+			for i, mnemonics := range groupMnemonics {
+				// Test all threshold combinations of seeds
+				mgp := s.MemberGroupParams[i]
+				list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+				for _, selection := range list {
+					selected := selectShares(selection, mnemonics)
+					masterSecretBytes, err = CombineMnemonicsWithPassphrase(
+						selected, []byte(testPassphrase),
+					)
+					if err != nil {
+						t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v",
+							err.Error(), selectionString(selection), mnemonics)
+						continue
+					}
+
+					masterSecret := hex.EncodeToString(masterSecretBytes)
+					if err != nil {
+						t.Errorf("hex.EncodeToString returned error: %s", err.Error())
+					}
+
+					if masterSecret != s.MasterSecret {
+						t.Errorf("masterSecret mismatch: got %q, want %q",
+							string(masterSecret), s.MasterSecret)
+					} else {
+						t.Logf("masterSecret match with mnemonics [%s]: %v", selectionString(selection), mnemonics)
+					}
+				}
+			}
+		} else {
+			// For multi-group test all combinations of groups with random
+			// sets of threshold seeds
+			groupSelections := make([][]string, 0, len(groupMnemonics))
+			for i, mnemonics := range groupMnemonics {
+				mgp := s.MemberGroupParams[i]
+				selected := selectRandomShares(mgp, mnemonics)
+				groupSelections = append(groupSelections, selected)
+			}
+			//t.Logf("groupSelections: %v", groupSelections)
+
+			list := combin.Combinations(len(groupMnemonics), s.GroupThreshold)
+			//t.Logf("selected: %v", list)
 			for _, selection := range list {
-				selected := selectShares(selection, mnemonics)
-				//fmt.Fprintf(os.Stderr, "selected: %s\n", strings.Join(selected, " / "))
+				selected := selectAndFlattenSets(selection, groupSelections)
+				//t.Logf("selected: %v", selected)
 
 				masterSecretBytes, err = CombineMnemonicsWithPassphrase(
 					selected, []byte(testPassphrase),
 				)
 				if err != nil {
-					t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v", err.Error(), selectionString(selection), mnemonics)
+					t.Errorf("CombineMnemonics returned error: %q on mnemonics [%v] %v",
+						err.Error(), selectionString(selection), selected)
 					continue
 				}
 
@@ -338,10 +400,12 @@ func TestGenerateMnemonics(t *testing.T) {
 				}
 
 				if masterSecret != s.MasterSecret {
-					t.Errorf("masterSecret mismatch: got %q, want %q",
+					t.Errorf("masterSecret mismatch with group mnemonics [%s]: got %q, want %q",
+						selectionString(selection),
 						string(masterSecret), s.MasterSecret)
 				} else {
-					t.Logf("masterSecret match with mnemonics [%s]: %v", selectionString(selection), mnemonics)
+					t.Logf("masterSecret match with group mnemonics [%s]: %v",
+						selectionString(selection), selected)
 				}
 			}
 		}
