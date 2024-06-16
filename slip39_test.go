@@ -311,6 +311,59 @@ func selectionString(selection []int) string {
 	return strings.Join(s, ",")
 }
 
+func checkSelectedMnemonics(
+	t *testing.T,
+	s secret,
+	selectedIndices []int,
+	selected []string,
+) {
+	masterSecretBytes, err := CombineMnemonicsWithPassphrase(
+		selected, []byte(testPassphrase),
+	)
+	if err != nil {
+		t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v",
+			err.Error(), selectionString(selectedIndices), selected)
+		return
+	}
+
+	masterSecret := hex.EncodeToString(masterSecretBytes)
+	if err != nil {
+		t.Errorf("hex.EncodeToString returned error: %s", err.Error())
+	}
+
+	if masterSecret != s.MasterSecret {
+		t.Errorf("masterSecret mismatch: got %q, want %q",
+			string(masterSecret), s.MasterSecret)
+	} else {
+		t.Logf("masterSecret match with mnemonics [%s]: %v",
+			selectionString(selectedIndices), selected)
+	}
+
+	// Check that deleting a random share from selected gives an error
+	if len(selected) > 1 {
+		i, err := rand.Int(rand.Reader, big.NewInt(int64(len(selected))))
+		if err != nil {
+			t.Fatalf("rand.Int failed: %s", err.Error())
+		}
+		j := int(i.Int64())
+		selected2 := make([]string, len(selected)-1)
+		copy(selected2, selected[:j])
+		if len(selected) > j {
+			copy(selected2[j:], selected[j+1:])
+		}
+		_, err = CombineMnemonicsWithPassphrase(
+			selected2, []byte(testPassphrase),
+		)
+		if err == nil {
+			t.Errorf("CombineMnemonics unexpectedly succeeded with k-1 mnemonics (%d) %v",
+				len(selected2), selected2)
+		} else {
+			t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v",
+				len(selected2), selected2)
+		}
+	}
+}
+
 // Test round-tripping GenerateMnemonics/CombineMnemonics
 func TestGenerateMnemonics(t *testing.T) {
 	t.Parallel()
@@ -337,35 +390,16 @@ func TestGenerateMnemonics(t *testing.T) {
 		if err != nil {
 			t.Error(err)
 		}
-		t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
+		//t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
 
 		if s.GroupThreshold == 1 {
 			for i, mnemonics := range groupMnemonics {
 				// Test all threshold combinations of seeds
 				mgp := s.MemberGroupParams[i]
 				list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
-				for _, selection := range list {
-					selected := selectShares(selection, mnemonics)
-					masterSecretBytes, err = CombineMnemonicsWithPassphrase(
-						selected, []byte(testPassphrase),
-					)
-					if err != nil {
-						t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v",
-							err.Error(), selectionString(selection), mnemonics)
-						continue
-					}
-
-					masterSecret := hex.EncodeToString(masterSecretBytes)
-					if err != nil {
-						t.Errorf("hex.EncodeToString returned error: %s", err.Error())
-					}
-
-					if masterSecret != s.MasterSecret {
-						t.Errorf("masterSecret mismatch: got %q, want %q",
-							string(masterSecret), s.MasterSecret)
-					} else {
-						t.Logf("masterSecret match with mnemonics [%s]: %v", selectionString(selection), mnemonics)
-					}
+				for _, selectedIndices := range list {
+					selected := selectShares(selectedIndices, mnemonics)
+					checkSelectedMnemonics(t, s, selectedIndices, selected)
 				}
 			}
 		} else {
@@ -381,32 +415,10 @@ func TestGenerateMnemonics(t *testing.T) {
 
 			list := combin.Combinations(len(groupMnemonics), s.GroupThreshold)
 			//t.Logf("selected: %v", list)
-			for _, selection := range list {
-				selected := selectAndFlattenSets(selection, groupSelections)
+			for _, selectedIndices := range list {
+				selected := selectAndFlattenSets(selectedIndices, groupSelections)
 				//t.Logf("selected: %v", selected)
-
-				masterSecretBytes, err = CombineMnemonicsWithPassphrase(
-					selected, []byte(testPassphrase),
-				)
-				if err != nil {
-					t.Errorf("CombineMnemonics returned error: %q on mnemonics [%v] %v",
-						err.Error(), selectionString(selection), selected)
-					continue
-				}
-
-				masterSecret := hex.EncodeToString(masterSecretBytes)
-				if err != nil {
-					t.Errorf("hex.EncodeToString returned error: %s", err.Error())
-				}
-
-				if masterSecret != s.MasterSecret {
-					t.Errorf("masterSecret mismatch with group mnemonics [%s]: got %q, want %q",
-						selectionString(selection),
-						string(masterSecret), s.MasterSecret)
-				} else {
-					t.Logf("masterSecret match with group mnemonics [%s]: %v",
-						selectionString(selection), selected)
-				}
+				checkSelectedMnemonics(t, s, selectedIndices, selected)
 			}
 		}
 

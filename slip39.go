@@ -81,6 +81,16 @@ var (
 	// ErrInvalidThreshold is returned when the threshold is invalid
 	ErrInvalidThreshold = errors.New("the requested threshold must be a positive integers and must not exceed the number of shares")
 
+	// ErrTooFewShareGroups is returned when the number of groups supplied is fewer
+	// than GroupThreshold
+	ErrTooFewShareGroups = errors.New("number of groups satisfied is fewer than group threshold")
+
+	/*
+		// ErrTooFewShares is returned when the number of shares supplied is fewer
+		// than MemberThreshold
+		ErrTooFewShares = errors.New("number of shares is fewer than member threshold")
+	*/
+
 	// ErrInvalidSingleMemberThreshold is returned when the group threshold is invalid
 	ErrInvalidSingleMemberThreshold = errors.New("cannot create multiple member shares with member threshold 1 - use 1-of-1 member sharing instead")
 
@@ -139,7 +149,7 @@ type ShareGroupParameters struct {
 // Share represents a single share of a Shamir secret scheme
 type Share struct {
 	ShareGroupParameters `json:",inline"`
-	Index                int    `json:"index"`
+	MemberIndex          int    `json:"member_index"`
 	ShareValues          []byte `json:"share_values"`
 }
 
@@ -424,7 +434,7 @@ func (s Share) encodeShareParams() []int {
 	val <<= 4
 	val += s.GroupCount - 1
 	val <<= 4
-	val += s.Index
+	val += s.MemberIndex
 	val <<= 4
 	val += s.MemberThreshold - 1
 	// Group parameters are 2 words
@@ -531,7 +541,7 @@ func ParseShare(mnemonic string) (Share, error) {
 	share.GroupIndex = shareParams[0]
 	share.GroupThreshold = shareParams[1] + 1
 	share.GroupCount = shareParams[2] + 1
-	share.Index = shareParams[3]
+	share.MemberIndex = shareParams[3]
 	share.MemberThreshold = shareParams[4] + 1
 
 	if share.GroupCount < share.GroupThreshold {
@@ -590,7 +600,7 @@ func (group shareGroup) toRawShares() []rawShare {
 	grs := make([]rawShare, len(group.shares))
 	for i, s := range group.shares {
 		grs[i] = rawShare{
-			x:    s.Index,
+			x:    s.MemberIndex,
 			data: s.ShareValues,
 		}
 	}
@@ -849,7 +859,7 @@ func splitEMS(
 		for memberIndex, value := range rawMemberShares {
 			memberShares = append(memberShares, Share{
 				ShareGroupParameters: sgp,
-				Index:                memberIndex,
+				MemberIndex:          memberIndex,
 				ShareValues:          value.data,
 			})
 		}
@@ -876,8 +886,8 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 		if i == 0 {
 			params = group.shares[0].ShareCommonParameters
 			if len(groups) < params.GroupThreshold {
-				return ems, fmt.Errorf("insufficient share groups (%d supplied, %d required)",
-					len(groups), params.GroupThreshold)
+				//return ems, fmt.Errorf("insufficient share groups (%d supplied, %d required)", len(groups), params.GroupThreshold)
+				return ems, ErrTooFewShareGroups
 			}
 
 			if len(groups) != params.GroupThreshold {
