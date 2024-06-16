@@ -118,28 +118,33 @@ type MemberGroupParameters struct {
 	MemberCount     int `json:"member_count"`
 }
 
-type shareCommonParameters struct {
-	identifier        int
-	extendable        int
-	iterationExponent int
-	groupThreshold    int
-	groupCount        int
+// ShareCommonParameters represents the common parameters for a set of shares
+// in a Shamir secret scheme
+type ShareCommonParameters struct {
+	Identifier        int `json:"identifier"`
+	Extendable        int `json:"extendable"`
+	IterationExponent int `json:"iteration_exponent"`
+	GroupThreshold    int `json:"group_threshold"`
+	GroupCount        int `json:"group_count"`
 }
 
-type shareGroupParameters struct {
-	shareCommonParameters
-	groupIndex      int
-	memberThreshold int
+// ShareGroupParameters represents the common parameters for a single group
+// in a Shamir secret scheme
+type ShareGroupParameters struct {
+	ShareCommonParameters `json:",inline"`
+	GroupIndex            int `json:"group_index"`
+	MemberThreshold       int `json:"member_threshold"`
 }
 
-type shareStruct struct {
-	shareGroupParameters
-	index       int
-	shareValues []byte
+// Share represents a single share of a Shamir secret scheme
+type Share struct {
+	ShareGroupParameters `json:",inline"`
+	Index                int    `json:"index"`
+	ShareValues          []byte `json:"share_values"`
 }
 
 type shareGroup struct {
-	shares []shareStruct
+	shares []Share
 }
 
 type shareGroupMap map[int]shareGroup
@@ -404,29 +409,29 @@ func rs1024CreateChecksum(data []int, cs string) []int {
 	return checksum
 }
 
-func (s shareStruct) encodeIDExp() []int {
-	idExpInt := s.identifier << (iterationExpLengthBits + extendableFlagLengthBits)
-	idExpInt += s.extendable << iterationExpLengthBits
-	idExpInt += s.iterationExponent
+func (s Share) encodeIDExp() []int {
+	idExpInt := s.Identifier << (iterationExpLengthBits + extendableFlagLengthBits)
+	idExpInt += s.Extendable << iterationExpLengthBits
+	idExpInt += s.IterationExponent
 	return intToWordIndices(idExpInt, idExpLengthWords)
 }
 
-func (s shareStruct) encodeShareParams() []int {
+func (s Share) encodeShareParams() []int {
 	// Each value is 4 bits, for 20 bits total
-	val := s.groupIndex
+	val := s.GroupIndex
 	val <<= 4
-	val += s.groupThreshold - 1
+	val += s.GroupThreshold - 1
 	val <<= 4
-	val += s.groupCount - 1
+	val += s.GroupCount - 1
 	val <<= 4
-	val += s.index
+	val += s.Index
 	val <<= 4
-	val += s.memberThreshold - 1
+	val += s.MemberThreshold - 1
 	// Group parameters are 2 words
 	return intToWordIndices(val, 2)
 }
 
-func (s shareStruct) encode(valueData []int) []int {
+func (s Share) encode(valueData []int) []int {
 	shareData := []int{}
 	shareData = append(shareData, s.encodeIDExp()...)
 	shareData = append(shareData, s.encodeShareParams()...)
@@ -434,17 +439,17 @@ func (s shareStruct) encode(valueData []int) []int {
 	return shareData
 }
 
-func (s shareStruct) customizationString() string {
-	if s.extendable != 0 {
+func (s Share) customizationString() string {
+	if s.Extendable != 0 {
 		return customizationStringExtendable
 	}
 	return customizationStringOriginal
 }
 
-// words converts share data to a share mnemonic
-func (s shareStruct) words() ([]string, error) {
-	valueWordCount := bitsToWords(len(s.shareValues) * 8)
-	valueInt := big.NewInt(0).SetBytes(s.shareValues)
+// Words returns the mnemonic words for s as a string slice, or an error
+func (s Share) Words() ([]string, error) {
+	valueWordCount := bitsToWords(len(s.ShareValues) * 8)
+	valueInt := big.NewInt(0).SetBytes(s.ShareValues)
 	valueData := bigintToWordIndices(valueInt, valueWordCount)
 
 	shareData := s.encode(valueData)
@@ -464,16 +469,19 @@ func (s shareStruct) words() ([]string, error) {
 	return words, nil
 }
 
-func (s shareStruct) mnemonic() (string, error) {
-	words, err := s.words()
+// Mnemonic returns the mnemonic string for s, or an error
+func (s Share) Mnemonic() (string, error) {
+	words, err := s.Words()
 	if err != nil {
 		return "", err
 	}
 	return strings.Join(words, " "), nil
 }
 
-func parseShare(mnemonic string) (shareStruct, error) {
-	var share shareStruct
+// ParseShare parses a slip39 mnemonic string and returns a Share struct,
+// or an error if the mnemonic is invalid.
+func ParseShare(mnemonic string) (Share, error) {
+	var share Share
 
 	mnemonicData, isValid := splitMnemonicWords(strings.ToLower(mnemonic))
 	if !isValid {
@@ -501,10 +509,10 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	idExpInt := intFromWordIndices(idExpData)
 	//fmt.Fprintf(os.Stderr, "idExpInt: %d\n", idExpInt)
 
-	share.identifier = idExpInt >>
+	share.Identifier = idExpInt >>
 		(extendableFlagLengthBits + iterationExpLengthBits)
-	share.extendable = idExpInt >> iterationExpLengthBits & 1
-	share.iterationExponent = idExpInt & ((1 << iterationExpLengthBits) - 1)
+	share.Extendable = idExpInt >> iterationExpLengthBits & 1
+	share.IterationExponent = idExpInt & ((1 << iterationExpLengthBits) - 1)
 
 	// Verify checksum
 	cs := share.customizationString()
@@ -520,13 +528,13 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	shareParamsData := data[idExpLengthWords : idExpLengthWords+2]
 	shareParamsInt := intFromWordIndices(shareParamsData)
 	shareParams := intToIndices(shareParamsInt, 5, 4)
-	share.groupIndex = shareParams[0]
-	share.groupThreshold = shareParams[1] + 1
-	share.groupCount = shareParams[2] + 1
-	share.index = shareParams[3]
-	share.memberThreshold = shareParams[4] + 1
+	share.GroupIndex = shareParams[0]
+	share.GroupThreshold = shareParams[1] + 1
+	share.GroupCount = shareParams[2] + 1
+	share.Index = shareParams[3]
+	share.MemberThreshold = shareParams[4] + 1
 
-	if share.groupCount < share.groupThreshold {
+	if share.GroupCount < share.GroupThreshold {
 		return share,
 			fmt.Errorf(`Invalid mnemonic "%s ...". Group threshold cannot be greater than group count`,
 				strings.Join(mnemonicData[:idExpLengthWords+2], " "))
@@ -545,8 +553,8 @@ func parseShare(mnemonic string) (shareStruct, error) {
 	}
 	valueBytes = make([]byte, valueByteCount)
 	valueInt.FillBytes(valueBytes)
-	share.shareValues = valueBytes
-	//fmt.Fprintf(os.Stderr, "shareValues: %q (len %d)\n", share.shareValues, len(share.shareValues))
+	share.ShareValues = valueBytes
+	//fmt.Fprintf(os.Stderr, "shareValues: %q (len %d)\n", share.ShareValues, len(share.ShareValues))
 
 	return share, nil
 }
@@ -554,21 +562,21 @@ func parseShare(mnemonic string) (shareStruct, error) {
 // newShareGroupMap creates a new shareGroupMap from a slice of mnemonics,
 // or returns an error.
 func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
-	commonParams := mapset.NewSet[shareCommonParameters]()
+	commonParams := mapset.NewSet[ShareCommonParameters]()
 	groups := make(shareGroupMap)
 	for _, mnemonic := range mnemonics {
-		share, err := parseShare(mnemonic)
+		share, err := ParseShare(mnemonic)
 		if err != nil {
 			return nil, err
 		}
 		//fmt.Fprintf(os.Stderr, "newShareGroupMap: share %v\n", share)
-		commonParams.Add(share.shareCommonParameters)
-		group, ok := groups[share.groupIndex]
+		commonParams.Add(share.ShareCommonParameters)
+		group, ok := groups[share.GroupIndex]
 		if !ok {
-			groups[share.groupIndex] = shareGroup{shares: []shareStruct{share}}
+			groups[share.GroupIndex] = shareGroup{shares: []Share{share}}
 		} else {
 			group.shares = append(group.shares, share)
-			groups[share.groupIndex] = group
+			groups[share.GroupIndex] = group
 		}
 	}
 	if commonParams.Cardinality() != 1 {
@@ -582,8 +590,8 @@ func (group shareGroup) toRawShares() []rawShare {
 	grs := make([]rawShare, len(group.shares))
 	for i, s := range group.shares {
 		grs[i] = rawShare{
-			x:    s.index,
-			data: s.shareValues,
+			x:    s.Index,
+			data: s.ShareValues,
 		}
 	}
 	return grs
@@ -792,7 +800,7 @@ func splitEMS(
 	groupThreshold int,
 	mgplist []MemberGroupParameters,
 	ems encryptedMasterSecret,
-) ([][]shareStruct, error) {
+) ([][]Share, error) {
 	// TODO: test all these error conditions
 	if len(ems.ciphertext)*8 < minStrengthBits {
 		return nil, ErrInvalidMasterSecretLength
@@ -812,7 +820,7 @@ func splitEMS(
 		return nil, err
 	}
 
-	groupedShares := make([][]shareStruct, 0, len(mgplist))
+	groupedShares := make([][]Share, 0, len(mgplist))
 	for groupIndex, groupShare := range groupShares {
 		mgp := mgplist[groupIndex]
 		rawMemberShares, err := splitSecret(
@@ -822,27 +830,27 @@ func splitEMS(
 			return nil, err
 		}
 
-		memberShares := make([]shareStruct, 0, len(rawMemberShares))
+		memberShares := make([]Share, 0, len(rawMemberShares))
 		extendable := 1
 		if !ems.extendable {
 			extendable = 0
 		}
-		sgp := shareGroupParameters{
-			shareCommonParameters: shareCommonParameters{
-				identifier:        ems.identifier,
-				extendable:        extendable,
-				iterationExponent: ems.iterationExponent,
-				groupThreshold:    groupThreshold,
-				groupCount:        len(mgplist),
+		sgp := ShareGroupParameters{
+			ShareCommonParameters: ShareCommonParameters{
+				Identifier:        ems.identifier,
+				Extendable:        extendable,
+				IterationExponent: ems.iterationExponent,
+				GroupThreshold:    groupThreshold,
+				GroupCount:        len(mgplist),
 			},
-			groupIndex:      groupIndex,
-			memberThreshold: mgp.MemberThreshold,
+			GroupIndex:      groupIndex,
+			MemberThreshold: mgp.MemberThreshold,
 		}
 		for memberIndex, value := range rawMemberShares {
-			memberShares = append(memberShares, shareStruct{
-				shareGroupParameters: sgp,
-				index:                memberIndex,
-				shareValues:          value.data,
+			memberShares = append(memberShares, Share{
+				ShareGroupParameters: sgp,
+				Index:                memberIndex,
+				ShareValues:          value.data,
 			})
 		}
 		groupedShares = append(groupedShares, memberShares)
@@ -862,33 +870,33 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 		return ems, ErrEmptyShareGroup
 	}
 
-	var params shareCommonParameters
+	var params ShareCommonParameters
 	i := 0
 	for _, group := range groups {
 		if i == 0 {
-			params = group.shares[0].shareCommonParameters
-			if len(groups) < params.groupThreshold {
+			params = group.shares[0].ShareCommonParameters
+			if len(groups) < params.GroupThreshold {
 				return ems, fmt.Errorf("insufficient share groups (%d supplied, %d required)",
-					len(groups), params.groupThreshold)
+					len(groups), params.GroupThreshold)
 			}
 
-			if len(groups) != params.groupThreshold {
+			if len(groups) != params.GroupThreshold {
 				return ems, fmt.Errorf("wrong number of share groups (%d supplied, %d required)",
-					len(groups), params.groupThreshold)
+					len(groups), params.GroupThreshold)
 			}
 		}
 
-		//fmt.Fprintf(os.Stderr, "recoverEMS: group.shares %d, shares[0].memberThreshold %d\n", len(group.shares), group.shares[0].memberThreshold)
-		if len(group.shares) != group.shares[0].memberThreshold {
-			shareWords, err := group.shares[0].words()
+		//fmt.Fprintf(os.Stderr, "recoverEMS: group.shares %d, shares[0].MemberThreshold %d\n", len(group.shares), group.shares[0].MemberThreshold)
+		if len(group.shares) != group.shares[0].MemberThreshold {
+			shareWords, err := group.shares[0].Words()
 			if err != nil {
 				return ems, fmt.Errorf("wrong number of shares (%d supplied, %d required for group starting with %q)",
-					len(group.shares), group.shares[0].memberThreshold,
+					len(group.shares), group.shares[0].MemberThreshold,
 					"unknown")
 			}
 			prefix := strings.Join(shareWords[:groupPrefixLengthWords], " ")
 			return ems, fmt.Errorf("wrong number of shares (%d supplied, %d required for group starting with %q)",
-				len(group.shares), group.shares[0].memberThreshold, prefix)
+				len(group.shares), group.shares[0].MemberThreshold, prefix)
 		}
 
 		i++
@@ -898,7 +906,7 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	for groupIndex, group := range groups {
 		grs := group.toRawShares()
 		//fmt.Fprintf(os.Stderr, "recoverEMS: groupIndex %d, grs %v\n", groupIndex, grs)
-		secret, err := recoverSecret(group.shares[0].memberThreshold, grs)
+		secret, err := recoverSecret(group.shares[0].MemberThreshold, grs)
 		if err != nil {
 			return ems, err
 		}
@@ -909,15 +917,15 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 		})
 	}
 
-	ciphertext, err := recoverSecret(params.groupThreshold, groupShares)
+	ciphertext, err := recoverSecret(params.GroupThreshold, groupShares)
 	if err != nil {
 		return ems, err
 	}
 
 	return encryptedMasterSecret{
-		identifier:        params.identifier,
-		extendable:        params.extendable == 1,
-		iterationExponent: params.iterationExponent,
+		identifier:        params.Identifier,
+		extendable:        params.Extendable == 1,
+		iterationExponent: params.IterationExponent,
 		ciphertext:        ciphertext,
 	}, nil
 }
@@ -1025,7 +1033,7 @@ func GenerateMnemonicsWithOptions(
 	for _, group := range groupedShares {
 		mnemonics := make([]string, 0, len(group))
 		for _, share := range group {
-			mnemonic, err := share.mnemonic()
+			mnemonic, err := share.Mnemonic()
 			if err != nil {
 				return nil, err
 			}

@@ -167,8 +167,8 @@ func TestGetSalt(t *testing.T) {
 	}
 }
 
-// Test round-tripping ParseShare and share.words()
-func TestParseShareWords(t *testing.T) {
+// Test round-tripping ParseShare and share.Mnemonic()
+func TestParseShareMnemonic(t *testing.T) {
 	t.Parallel()
 
 	var tests = []struct {
@@ -180,19 +180,19 @@ func TestParseShareWords(t *testing.T) {
 
 	for _, tc := range tests {
 		//t.Logf("input: %v", tc.input)
-		s, err := parseShare(tc.input)
+		s, err := ParseShare(tc.input)
 		if err != nil {
 			t.Fatal(err)
 		}
 		//t.Logf("shareValues: %v", s.ShareValues)
-		w, err := s.words()
+		mnemonic, err := s.Mnemonic()
 		if err != nil {
 			t.Fatal(err)
 		}
-		words := strings.Join(w, " ")
-		//t.Logf("words: %s", words)
-		if words != tc.input {
-			t.Errorf("error on %s: input %q, output %q", tc.name, tc.input, words)
+		//t.Logf("mnemonic: %s", mnemonic)
+		if mnemonic != tc.input {
+			t.Errorf("error on %s: input %q, output %q",
+				tc.name, tc.input, mnemonic)
 		}
 	}
 }
