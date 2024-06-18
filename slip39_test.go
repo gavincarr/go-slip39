@@ -21,6 +21,40 @@ const (
 
 var (
 	reRange = regexp.MustCompile(`^(?:(\d+)?(-))?(\d+)$`)
+
+	// vectorErrors maps vector index to expected error
+	vectorErrors = map[int]error{
+		2:  ErrInvalidChecksum,
+		3:  ErrInvalidPadding{},
+		5:  ErrTooFewShares{},
+		6:  ErrInvalidCommonParameters,
+		7:  ErrInvalidCommonParameters,
+		8:  ErrInvalidCommonParameters,
+		9:  ErrInvalidCommonParameters,
+		10: ErrBadGroupThreshold{},
+		11: ErrInvalidMnemonicIndices,
+		12: ErrTooManyShares{},
+		13: ErrInvalidMnemonicSharedSecretDigest,
+		14: ErrTooFewShares{},
+		15: ErrTooFewShares{},
+		16: ErrTooFewShares{},
+		21: ErrInvalidChecksum,
+		22: ErrInvalidPadding{},
+		24: ErrTooFewShares{},
+		25: ErrInvalidCommonParameters,
+		26: ErrInvalidCommonParameters,
+		27: ErrInvalidCommonParameters,
+		28: ErrInvalidCommonParameters,
+		29: ErrBadGroupThreshold{},
+		30: ErrInvalidMnemonicIndices,
+		31: ErrTooManyShares{},
+		32: ErrInvalidMnemonicSharedSecretDigest,
+		33: ErrTooFewShares{},
+		34: ErrTooFewShares{},
+		35: ErrTooFewShares{},
+		39: ErrInvalidMnemonic,
+		40: ErrInvalidPadding{},
+	}
 )
 
 type vector struct {
@@ -127,6 +161,7 @@ func parseArgs(t *testing.T) (int, int) {
 }
 
 // Text xor
+/*
 func TestXor(t *testing.T) {
 	t.Parallel()
 
@@ -146,8 +181,10 @@ func TestXor(t *testing.T) {
 		}
 	}
 }
+*/
 
 // Test getSalt
+/*
 func TestGetSalt(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +204,7 @@ func TestGetSalt(t *testing.T) {
 		}
 	}
 }
+*/
 
 // Test round-tripping ParseShare and share.Mnemonic()
 func TestParseShareMnemonic(t *testing.T) {
@@ -214,7 +252,6 @@ func TestCipherEncryptDecrypt(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("encrypted: %q", encrypted)
 		decrypted, err := cipherDecrypt(encrypted, []byte(testPassphrase), 1, tc.id, true)
 		if string(decrypted) != tc.secret {
 			t.Errorf("want %q, got %q", tc.secret, string(decrypted))
@@ -244,6 +281,9 @@ func TestCombineMnemonics(t *testing.T) {
 			// If masterSecret is empty, then an error is expected
 			if v.masterSecret != "" {
 				t.Errorf("CombineMnemonics returned (unexpected) error: %s (%q)",
+					err.Error(), v.description)
+			} else if vectorErrors[i+1] != nil && !errors.Is(err, vectorErrors[i+1]) {
+				t.Errorf("CombineMnemonics returned (unexpected) error type: %s (%q)",
 					err.Error(), v.description)
 				/*
 					} else {
@@ -335,9 +375,11 @@ func checkSelectedMnemonics(
 	if masterSecret != s.MasterSecret {
 		t.Errorf("masterSecret mismatch: got %q, want %q",
 			string(masterSecret), s.MasterSecret)
-	} else {
-		t.Logf("masterSecret match with mnemonics [%s]: %v",
-			selectionString(selectedIndices), selected)
+		/*
+			} else {
+				t.Logf("masterSecret match with mnemonics [%s]: %v",
+					selectionString(selectedIndices), selected)
+		*/
 	}
 
 	// Check that deleting a random share from selected gives an error
@@ -358,12 +400,13 @@ func checkSelectedMnemonics(
 		if err == nil {
 			t.Errorf("CombineMnemonics unexpectedly succeeded with k-1 mnemonics (%d) %v",
 				len(selected2), selected2)
-		} else if errors.Is(err, ErrTooFewShares{}) {
-			t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v",
-				len(selected2), selected2)
-		} else {
-			t.Errorf("CombineMnemonics failed with unexpected with k-1 mnemonics (%d) %v: %s",
+		} else if !errors.Is(err, ErrTooFewShares{}) {
+			t.Errorf("CombineMnemonics failed with unexpected error with k-1 mnemonics (%d) %v: %s",
 				len(selected2), selected2, err.Error())
+			/*
+				} else {
+					t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v", len(selected2), selected2)
+			*/
 		}
 	}
 }

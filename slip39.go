@@ -74,6 +74,7 @@ type errBadQuantityShares struct { // private wrapping error, to hold details
 	prefix    string
 }
 
+// ErrToo{Few,Many}Shares
 func (e ErrTooFewShares) Error() string {
 	// Required to satisfy error interface, but not actually used
 	return "number of shares is fewer than the required threshold"
@@ -104,12 +105,50 @@ func (e errBadQuantityShares) Unwrap() error {
 	return e.errorType
 }
 
+// ErrInvalidPadding
+type ErrInvalidPadding struct{}
+type errInvalidPadding struct {
+	errorType ErrInvalidPadding
+	prefix    string
+}
+
+func (e ErrInvalidPadding) Error() string {
+	return "invalid mnemonic padding"
+}
+func (e errInvalidPadding) Error() string {
+	return fmt.Sprintf(`invalid mnemonic padding for "%s..."`, e.prefix)
+}
+func (e errInvalidPadding) Unwrap() error {
+	return e.errorType
+}
+
+// ErrBadGroupThreshold
+type ErrBadGroupThreshold struct{}
+type errBadGroupThreshold struct {
+	errorType ErrBadGroupThreshold
+	prefix    string
+}
+
+func (e ErrBadGroupThreshold) Error() string {
+	return "group threshold cannot exceed group count"
+}
+func (e errBadGroupThreshold) Error() string {
+	return fmt.Sprintf(`invalid mnemonic "%s..." - group threshold cannot exceed group count`, e.prefix)
+}
+func (e errBadGroupThreshold) Unwrap() error {
+	return e.errorType
+}
+
 var (
 	// ErrInvalidChecksum is returned when the checksum on a mnemonic is invalid
 	ErrInvalidChecksum = errors.New("invalid checksum")
 
 	// ErrInvalidMnemonic is returned when a mnemonic is invalid
 	ErrInvalidMnemonic = errors.New("invalid mnemonic")
+
+	// ErrInvalidCommonParameters is returned when the mnemonics in a group differ
+	// in their identifiers, group thresholds, or group counts
+	ErrInvalidCommonParameters = errors.New("all mnemonics must begin with the same 2 words, must have the same group threshold and the same group count")
 
 	// ErrEmptyShareGroup is returned when a share group is empty
 	ErrEmptyShareGroup = errors.New("the share group is empty")
@@ -312,14 +351,14 @@ func cipherDecrypt(
 	return append(r, l...), nil
 }
 
-func splitMnemonicWords(mnemonic string) ([]string, bool) {
+func splitMnemonicWords(mnemonic string) ([]string, error) {
 	words := strings.Fields(mnemonic)
 
 	if len(words) < minMnemonicLengthWords {
-		return nil, false
+		return nil, ErrInvalidMnemonic
 	}
 
-	return words, true
+	return words, nil
 }
 
 // roundBits returns the number of `radixBits`-sized digits required to store a
@@ -525,15 +564,15 @@ func (s Share) Mnemonic() (string, error) {
 func ParseShare(mnemonic string) (Share, error) {
 	var share Share
 
-	mnemonicData, isValid := splitMnemonicWords(strings.ToLower(mnemonic))
-	if !isValid {
-		return share, ErrInvalidMnemonic
+	mnemonicData, err := splitMnemonicWords(strings.ToLower(mnemonic))
+	if err != nil {
+		return share, err
 	}
 
 	paddingLen := (radixBits * (len(mnemonicData) - metadataLengthWords)) % 16
 	//fmt.Fprintf(os.Stderr, "paddingLen: %d\n", paddingLen)
 	if paddingLen > 8 {
-		return share, ErrInvalidMnemonic
+		return share, ErrInvalidPadding{}
 	}
 
 	var data = make([]int, len(mnemonicData))
@@ -577,9 +616,9 @@ func ParseShare(mnemonic string) (Share, error) {
 	share.MemberThreshold = shareParams[4] + 1
 
 	if share.GroupCount < share.GroupThreshold {
-		return share,
-			fmt.Errorf(`Invalid mnemonic "%s ...". Group threshold cannot be greater than group count`,
-				strings.Join(mnemonicData[:idExpLengthWords+2], " "))
+		return share, errBadGroupThreshold{
+			prefix: strings.Join(mnemonicData[:idExpLengthWords+2], " "),
+		}
 	}
 
 	valueData := data[idExpLengthWords+2 : len(data)-checksumLengthWords]
@@ -589,9 +628,9 @@ func ParseShare(mnemonic string) (Share, error) {
 	//fmt.Fprintf(os.Stderr, "valueInt: %d\n", valueInt)
 	valueBytes := valueInt.Bytes()
 	if len(valueBytes) > valueByteCount {
-		return share,
-			fmt.Errorf(`Invalid mnemonic padding for "%s ..."`,
-				strings.Join(mnemonicData[:idExpLengthWords+2], " "))
+		return share, errInvalidPadding{
+			prefix: strings.Join(mnemonicData[:idExpLengthWords+2], " "),
+		}
 	}
 	valueBytes = make([]byte, valueByteCount)
 	valueInt.FillBytes(valueBytes)
@@ -622,8 +661,7 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 		}
 	}
 	if commonParams.Cardinality() != 1 {
-		return nil,
-			fmt.Errorf("all mnemonics must begin with the same %d words, must have the same group threshold and the same group count", idExpLengthWords)
+		return nil, ErrInvalidCommonParameters
 	}
 	return groups, nil
 }
@@ -926,9 +964,14 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 		if i == 0 {
 			// Check group threshold only once
 			params = group.shares[0].ShareCommonParameters
+			var errorType error
+			errorType = ErrTooFewShares{}
+			if len(groups) > params.GroupThreshold {
+				errorType = ErrTooManyShares{}
+			}
 			if len(groups) != params.GroupThreshold {
 				return ems, errBadQuantityShares{
-					errorType: ErrTooFewShares{},
+					errorType: errorType,
 					isGroup:   true,
 					count:     len(groups),
 					threshold: params.GroupThreshold,
@@ -938,8 +981,13 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 
 		if len(group.shares) != group.shares[0].MemberThreshold {
 			prefix := extractGroupPrefix(group)
+			var errorType error
+			errorType = ErrTooFewShares{}
+			if len(group.shares) > group.shares[0].MemberThreshold {
+				errorType = ErrTooManyShares{}
+			}
 			return ems, errBadQuantityShares{
-				errorType: ErrTooFewShares{},
+				errorType: errorType,
 				isGroup:   false,
 				count:     len(group.shares),
 				threshold: group.shares[0].MemberThreshold,
