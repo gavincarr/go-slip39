@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"os"
 	"regexp"
@@ -357,9 +358,12 @@ func checkSelectedMnemonics(
 		if err == nil {
 			t.Errorf("CombineMnemonics unexpectedly succeeded with k-1 mnemonics (%d) %v",
 				len(selected2), selected2)
-		} else {
+		} else if errors.Is(err, ErrTooFewShares{}) {
 			t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v",
 				len(selected2), selected2)
+		} else {
+			t.Errorf("CombineMnemonics failed with unexpected with k-1 mnemonics (%d) %v: %s",
+				len(selected2), selected2, err.Error())
 		}
 	}
 }

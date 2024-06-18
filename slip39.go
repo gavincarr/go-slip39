@@ -62,6 +62,48 @@ var (
 	logTable = []int{}
 )
 
+// ErrTooFewShares is returned when the number of groups or shares supplied
+// is fewer than the required threshold
+type ErrTooFewShares struct{}      // public error, for testing with errors.Is()
+type ErrTooManyShares struct{}     // public error, for testing with errors.Is()
+type errBadQuantityShares struct { // private wrapping error, to hold details
+	errorType error
+	isGroup   bool
+	count     int
+	threshold int
+	prefix    string
+}
+
+func (e ErrTooFewShares) Error() string {
+	// Required to satisfy error interface, but not actually used
+	return "number of shares is fewer than the required threshold"
+}
+func (e ErrTooManyShares) Error() string {
+	// Required to satisfy error interface, but not actually used
+	return "number of shares exceeds the required threshold"
+}
+func (e errBadQuantityShares) Error() string {
+	items := "shares"
+	thresholdType := "member"
+	fewerMore := "fewer"
+	if e.count > e.threshold {
+		fewerMore = "more"
+	}
+	if e.isGroup {
+		items = "share groups"
+		thresholdType = "group"
+	}
+	prefixString := ""
+	if e.prefix != "" {
+		prefixString = fmt.Sprintf(", for group starting with %q", e.prefix)
+	}
+	return fmt.Sprintf("number of %s is %s than %s threshold (%d supplied, %d required%s)",
+		items, fewerMore, thresholdType, e.count, e.threshold, prefixString)
+}
+func (e errBadQuantityShares) Unwrap() error {
+	return e.errorType
+}
+
 var (
 	// ErrInvalidChecksum is returned when the checksum on a mnemonic is invalid
 	ErrInvalidChecksum = errors.New("invalid checksum")
@@ -80,16 +122,6 @@ var (
 
 	// ErrInvalidThreshold is returned when the threshold is invalid
 	ErrInvalidThreshold = errors.New("the requested threshold must be a positive integers and must not exceed the number of shares")
-
-	// ErrTooFewShareGroups is returned when the number of groups supplied is fewer
-	// than GroupThreshold
-	ErrTooFewShareGroups = errors.New("number of groups satisfied is fewer than group threshold")
-
-	/*
-		// ErrTooFewShares is returned when the number of shares supplied is fewer
-		// than MemberThreshold
-		ErrTooFewShares = errors.New("number of shares is fewer than member threshold")
-	*/
 
 	// ErrInvalidSingleMemberThreshold is returned when the group threshold is invalid
 	ErrInvalidSingleMemberThreshold = errors.New("cannot create multiple member shares with member threshold 1 - use 1-of-1 member sharing instead")
@@ -870,6 +902,14 @@ func splitEMS(
 	return groupedShares, nil
 }
 
+func extractGroupPrefix(group shareGroup) string {
+	shareWords, err := group.shares[0].Words()
+	if err != nil {
+		return ""
+	}
+	return strings.Join(shareWords[:groupPrefixLengthWords], " ")
+}
+
 // recoverEMS combines the shares in shareGroupMap, recovers the group metadata,
 // and returns the encrypted master secret. If there are any problems with the
 // share group it returns an error.
@@ -884,29 +924,27 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	i := 0
 	for _, group := range groups {
 		if i == 0 {
+			// Check group threshold only once
 			params = group.shares[0].ShareCommonParameters
-			if len(groups) < params.GroupThreshold {
-				//return ems, fmt.Errorf("insufficient share groups (%d supplied, %d required)", len(groups), params.GroupThreshold)
-				return ems, ErrTooFewShareGroups
-			}
-
 			if len(groups) != params.GroupThreshold {
-				return ems, fmt.Errorf("wrong number of share groups (%d supplied, %d required)",
-					len(groups), params.GroupThreshold)
+				return ems, errBadQuantityShares{
+					errorType: ErrTooFewShares{},
+					isGroup:   true,
+					count:     len(groups),
+					threshold: params.GroupThreshold,
+				}
 			}
 		}
 
-		//fmt.Fprintf(os.Stderr, "recoverEMS: group.shares %d, shares[0].MemberThreshold %d\n", len(group.shares), group.shares[0].MemberThreshold)
 		if len(group.shares) != group.shares[0].MemberThreshold {
-			shareWords, err := group.shares[0].Words()
-			if err != nil {
-				return ems, fmt.Errorf("wrong number of shares (%d supplied, %d required for group starting with %q)",
-					len(group.shares), group.shares[0].MemberThreshold,
-					"unknown")
+			prefix := extractGroupPrefix(group)
+			return ems, errBadQuantityShares{
+				errorType: ErrTooFewShares{},
+				isGroup:   false,
+				count:     len(group.shares),
+				threshold: group.shares[0].MemberThreshold,
+				prefix:    prefix,
 			}
-			prefix := strings.Join(shareWords[:groupPrefixLengthWords], " ")
-			return ems, fmt.Errorf("wrong number of shares (%d supplied, %d required for group starting with %q)",
-				len(group.shares), group.shares[0].MemberThreshold, prefix)
 		}
 
 		i++
@@ -998,21 +1036,25 @@ func randomIdentifier() (int, error) {
 }
 
 // GenerateMnemonicsWithOptions splits masterSecret into mnemonic shares
-// using Shamir's secret sharing scheme.
-// group_threshold is the number of groups required to reconstruct the master
-// secret.
-// groups is a slice of MemberGroupParameters, which contain ( MemberThreshold,
-// MemberCount ) pairs for each group, where MemberCount is the number of
-// shares to generate for the group, and MemberThreshold is the number of
-// members required to reconstruct the group secret.
-// masterSecret is the secret to split into shares, and passphrase is an
-// optional passphrase to protect the shares.
-// extendable is a boolean flag indicating whether the set of shares is
-// 'extendable', allowing additional sets of shares to be created later
-// for the same master secret (and passphrase, if used). Defaults to true.
-// iterationExponent is the exponent used to derive the iteration count used
-// in the PBKDF2 key derivation function. The number of iterations is
-// calculated as 10000 * 2^iterationExponent. Defaults to 1.
+// using Shamir's secret sharing scheme. The return value is a slice containing
+// the requested groups of shares, each of which is a string slice containing
+// the individual shares for that group.
+//
+// Parameters:
+//   - group_threshold is the number of groups required to reconstruct the master
+//     secret
+//   - groups is a slice of MemberGroupParameters, which contain ( MemberThreshold,
+//     MemberCount ) pairs for each group, where MemberCount is the number of
+//     shares to generate for the group, and MemberThreshold is the number of
+//     members required to reconstruct the group secret
+//   - masterSecret is the secret to split into shares
+//   - passphrase is an optional passphrase to protect the shares
+//   - extendable is a boolean flag indicating whether the set of shares is
+//     'extendable', allowing additional sets of shares to be created later
+//     for the same master secret (and passphrase, if used). Defaults to true.
+//   - iterationExponent is the exponent used to derive the iteration count used
+//     in the PBKDF2 key derivation function. The number of iterations is
+//     calculated as 10000 * 2^iterationExponent. Defaults to 1.
 func GenerateMnemonicsWithOptions(
 	groupThreshold int,
 	groups []MemberGroupParameters,
