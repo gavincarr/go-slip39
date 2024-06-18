@@ -64,7 +64,9 @@ var (
 
 // ErrTooFewShares is returned when the number of groups or shares supplied
 // is fewer than the required threshold
-type ErrTooFewShares struct{}      // public error, for testing with errors.Is()
+type ErrTooFewShares struct{} // public error, for testing with errors.Is()
+// ErrTooManyShares is returned when the number of groups or shares supplied
+// is greater than the required threshold
 type ErrTooManyShares struct{}     // public error, for testing with errors.Is()
 type errBadQuantityShares struct { // private wrapping error, to hold details
 	errorType error
@@ -105,7 +107,7 @@ func (e errBadQuantityShares) Unwrap() error {
 	return e.errorType
 }
 
-// ErrInvalidPadding
+// ErrInvalidPadding is returned when the padding on a mnemonic is invalid
 type ErrInvalidPadding struct{}
 type errInvalidPadding struct {
 	errorType ErrInvalidPadding
@@ -122,7 +124,7 @@ func (e errInvalidPadding) Unwrap() error {
 	return e.errorType
 }
 
-// ErrBadGroupThreshold
+// ErrBadGroupThreshold is returned when the group threshold exceeds the group count
 type ErrBadGroupThreshold struct{}
 type errBadGroupThreshold struct {
 	errorType ErrBadGroupThreshold
