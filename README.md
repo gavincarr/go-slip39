@@ -1,7 +1,7 @@
 go-slip39
 =========
 
-A SLIP-0039 library for Go. More specifically, this library is a port of the
+A SLIP-0039 library for Go. Specifically, this library is a port of the
 [SLIP-0039 python reference implementation](http://github.com/trezor/python-shamir-mnemonic/) to Go.
 
 SLIP-0039 describes a standard and interoperable implementation of Shamir's
@@ -48,7 +48,7 @@ import (
 	"github.com/gavincarr/go-slip39"
 )
 
-func Example() {
+func main() {
 	masterSecret := "bb54aac4b89dc868ba37d9cc21b2cece"
 	passphrase := "TREZOR"
 
