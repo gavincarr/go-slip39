@@ -161,7 +161,6 @@ func parseArgs(t *testing.T) (int, int) {
 }
 
 // Text xor
-/*
 func TestXor(t *testing.T) {
 	t.Parallel()
 
@@ -181,10 +180,8 @@ func TestXor(t *testing.T) {
 		}
 	}
 }
-*/
 
 // Test getSalt
-/*
 func TestGetSalt(t *testing.T) {
 	t.Parallel()
 
@@ -204,7 +201,6 @@ func TestGetSalt(t *testing.T) {
 		}
 	}
 }
-*/
 
 // Test round-tripping ParseShare and share.Mnemonic()
 func TestParseShareMnemonic(t *testing.T) {
@@ -213,24 +209,39 @@ func TestParseShareMnemonic(t *testing.T) {
 	var tests = []struct {
 		name  string
 		input string
+		err   error
 	}{
-		{"m1", "duckling enlarge academic academic agency result length solution fridge kidney coal piece deal husband erode duke ajar critical decision keyboard"},
+		{"m1", "duckling enlarge academic academic agency result length solution fridge kidney coal piece deal husband erode duke ajar critical decision keyboard", nil},
+		// Error cases
+		{"mnemonic bad word", "duckling enlarge academic academic agency result length solution fridge kidney coal piece deal husband erode duke ajar critical decision bogus", ErrInvalidMnemonicWord{}},
+		{"mnemonic bad length", "duckling enlarge", ErrInvalidMnemonic},
 	}
 
 	for _, tc := range tests {
 		//t.Logf("input: %v", tc.input)
 		s, err := ParseShare(tc.input)
 		if err != nil {
-			t.Fatal(err)
+			if tc.err == nil {
+				t.Error(err)
+			} else if !errors.Is(err, tc.err) {
+				t.Errorf("unexpected error on %q: want %q, got %q",
+					tc.name, tc.err, err)
+			} else {
+				_ = err.Error()
+			}
+			continue
 		}
 		//t.Logf("shareValues: %v", s.ShareValues)
 		mnemonic, err := s.Mnemonic()
 		if err != nil {
-			t.Fatal(err)
+			if tc.err == nil {
+				t.Error(err)
+			}
+			continue
 		}
 		//t.Logf("mnemonic: %s", mnemonic)
 		if mnemonic != tc.input {
-			t.Errorf("error on %s: input %q, output %q",
+			t.Errorf("error on %q: input %q, output %q",
 				tc.name, tc.input, mnemonic)
 		}
 	}
@@ -243,14 +254,24 @@ func TestCipherEncryptDecrypt(t *testing.T) {
 	var tests = []struct {
 		secret string
 		id     int
+		err    error
 	}{
-		{"bb54aac4b89dc868ba37d9cc21b2cece", 342},
+		{"bb54aac4b89dc868ba37d9cc21b2cece", 342, nil},
+		{"bb", 342, ErrInvalidMasterSecretLength},
 	}
 
 	for _, tc := range tests {
 		encrypted, err := cipherEncrypt([]byte(tc.secret), []byte(testPassphrase), 1, tc.id, true)
 		if err != nil {
-			t.Fatal(err)
+			if tc.err == nil {
+				t.Fatal(err)
+			}
+			if !errors.Is(err, tc.err) {
+				t.Errorf("got unexpected error: want %q, got %q",
+					tc.err.Error(), err.Error())
+			} else {
+				continue
+			}
 		}
 		decrypted, err := cipherDecrypt(encrypted, []byte(testPassphrase), 1, tc.id, true)
 		if string(decrypted) != tc.secret {
@@ -285,10 +306,11 @@ func TestCombineMnemonics(t *testing.T) {
 			} else if vectorErrors[i+1] != nil && !errors.Is(err, vectorErrors[i+1]) {
 				t.Errorf("CombineMnemonics returned (unexpected) error type: %s (%q)",
 					err.Error(), v.description)
+			} else {
+				_ = err.Error()
 				/*
-					} else {
-						t.Logf("CombineMnemonics returned (expected) error:%s (%q)",
-							err.Error(), v.description)
+					t.Logf("CombineMnemonics returned (expected) error:%s (%q)",
+						err.Error(), v.description)
 				*/
 			}
 		} else if v.masterSecret == "" {
@@ -355,12 +377,19 @@ func selectionString(selection []int) string {
 func checkSelectedMnemonics(
 	t *testing.T,
 	s secret,
+	passphrase string,
 	selectedIndices []int,
 	selected []string,
 ) {
-	masterSecretBytes, err := CombineMnemonicsWithPassphrase(
-		selected, []byte(testPassphrase),
-	)
+	var masterSecretBytes []byte
+	var err error
+	if passphrase != "" {
+		masterSecretBytes, err = CombineMnemonicsWithPassphrase(
+			selected, []byte(passphrase),
+		)
+	} else {
+		masterSecretBytes, err = CombineMnemonics(selected)
+	}
 	if err != nil {
 		t.Errorf("CombineMnemonics returned error: %q on mnemonics [%s] %v",
 			err.Error(), selectionString(selectedIndices), selected)
@@ -395,7 +424,7 @@ func checkSelectedMnemonics(
 			copy(selected2[j:], selected[j+1:])
 		}
 		_, err = CombineMnemonicsWithPassphrase(
-			selected2, []byte(testPassphrase),
+			selected2, []byte(passphrase),
 		)
 		if err == nil {
 			t.Errorf("CombineMnemonics unexpectedly succeeded with k-1 mnemonics (%d) %v",
@@ -403,10 +432,9 @@ func checkSelectedMnemonics(
 		} else if !errors.Is(err, ErrTooFewShares{}) {
 			t.Errorf("CombineMnemonics failed with unexpected error with k-1 mnemonics (%d) %v: %s",
 				len(selected2), selected2, err.Error())
-			/*
-				} else {
-					t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v", len(selected2), selected2)
-			*/
+		} else {
+			_ = err.Error()
+			//t.Logf("CombineMnemonics failed as expected with k-1 mnemonics (%d) %v", len(selected2), selected2)
 		}
 	}
 }
@@ -418,59 +446,69 @@ func TestGenerateMnemonics(t *testing.T) {
 	secrets := mustLoadSecrets(t)
 	from, to := parseArgs(t)
 
-	for i, s := range secrets {
-		if from > 0 && i+1 < from {
-			continue
-		}
-		//fmt.Fprintf(os.Stderr, "secret: %v\n", s)
+	for _, passphrase := range []string{testPassphrase, ""} {
+		for i, s := range secrets {
+			if from > 0 && i+1 < from {
+				continue
+			}
+			//fmt.Fprintf(os.Stderr, "secret: %v\n", s)
 
-		masterSecretBytes, err := hex.DecodeString(s.MasterSecret)
-		if err != nil {
-			t.Errorf("hex.DecodeString returned error: %s", err.Error())
-		}
+			masterSecretBytes, err := hex.DecodeString(s.MasterSecret)
+			if err != nil {
+				t.Errorf("hex.DecodeString returned error: %s", err.Error())
+			}
 
-		groupMnemonics, err := GenerateMnemonicsWithOptions(
-			s.GroupThreshold, s.MemberGroupParams,
-			masterSecretBytes, []byte(testPassphrase),
-			true, 0, // for some reason the python cli defaults to exponent=0
-		)
-		if err != nil {
-			t.Error(err)
-		}
-		//t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
+			var groupMnemonics [][]string
+			if passphrase != "" {
+				groupMnemonics, err = GenerateMnemonicsWithOptions(
+					s.GroupThreshold, s.MemberGroupParams,
+					masterSecretBytes, []byte(passphrase),
+					true, 0, // for some reason the python cli defaults to exponent=0
+				)
+			} else {
+				groupMnemonics, err = GenerateMnemonics(
+					s.GroupThreshold, s.MemberGroupParams,
+					masterSecretBytes,
+				)
+			}
+			if err != nil {
+				t.Error(err)
+			}
+			//t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
 
-		if s.GroupThreshold == 1 {
-			for i, mnemonics := range groupMnemonics {
-				// Test all threshold combinations of seeds
-				mgp := s.MemberGroupParams[i]
-				list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+			if s.GroupThreshold == 1 {
+				for i, mnemonics := range groupMnemonics {
+					// Test all threshold combinations of seeds
+					mgp := s.MemberGroupParams[i]
+					list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
+					for _, selectedIndices := range list {
+						selected := selectShares(selectedIndices, mnemonics)
+						checkSelectedMnemonics(t, s, passphrase, selectedIndices, selected)
+					}
+				}
+			} else {
+				// For multi-group test all combinations of groups with random
+				// sets of threshold seeds
+				groupSelections := make([][]string, 0, len(groupMnemonics))
+				for i, mnemonics := range groupMnemonics {
+					mgp := s.MemberGroupParams[i]
+					selected := selectRandomShares(mgp, mnemonics)
+					groupSelections = append(groupSelections, selected)
+				}
+				//t.Logf("groupSelections: %v", groupSelections)
+
+				list := combin.Combinations(len(groupMnemonics), s.GroupThreshold)
+				//t.Logf("selected: %v", list)
 				for _, selectedIndices := range list {
-					selected := selectShares(selectedIndices, mnemonics)
-					checkSelectedMnemonics(t, s, selectedIndices, selected)
+					selected := selectAndFlattenSets(selectedIndices, groupSelections)
+					//t.Logf("selected: %v", selected)
+					checkSelectedMnemonics(t, s, passphrase, selectedIndices, selected)
 				}
 			}
-		} else {
-			// For multi-group test all combinations of groups with random
-			// sets of threshold seeds
-			groupSelections := make([][]string, 0, len(groupMnemonics))
-			for i, mnemonics := range groupMnemonics {
-				mgp := s.MemberGroupParams[i]
-				selected := selectRandomShares(mgp, mnemonics)
-				groupSelections = append(groupSelections, selected)
-			}
-			//t.Logf("groupSelections: %v", groupSelections)
 
-			list := combin.Combinations(len(groupMnemonics), s.GroupThreshold)
-			//t.Logf("selected: %v", list)
-			for _, selectedIndices := range list {
-				selected := selectAndFlattenSets(selectedIndices, groupSelections)
-				//t.Logf("selected: %v", selected)
-				checkSelectedMnemonics(t, s, selectedIndices, selected)
+			if to > 0 && i+1 >= to {
+				break
 			}
-		}
-
-		if to > 0 && i+1 >= to {
-			break
 		}
 	}
 }

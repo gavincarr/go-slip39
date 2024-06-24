@@ -115,6 +115,7 @@ type errInvalidPadding struct {
 }
 
 func (e ErrInvalidPadding) Error() string {
+	// Required to satisfy error interface, but not actually used
 	return "invalid mnemonic padding"
 }
 func (e errInvalidPadding) Error() string {
@@ -132,12 +133,30 @@ type errBadGroupThreshold struct {
 }
 
 func (e ErrBadGroupThreshold) Error() string {
+	// Required to satisfy error interface, but not actually used
 	return "group threshold cannot exceed group count"
 }
 func (e errBadGroupThreshold) Error() string {
 	return fmt.Sprintf(`invalid mnemonic "%s..." - group threshold cannot exceed group count`, e.prefix)
 }
 func (e errBadGroupThreshold) Unwrap() error {
+	return e.errorType
+}
+
+type ErrInvalidMnemonicWord struct{}
+type errInvalidMnemonicWord struct {
+	errorType ErrInvalidMnemonicWord
+	word      string
+}
+
+func (e ErrInvalidMnemonicWord) Error() string {
+	// Required to satisfy error interface, but not actually used
+	return "invalid mnemonic - bad word"
+}
+func (e errInvalidMnemonicWord) Error() string {
+	return fmt.Sprintf("invalid mnemonic: word %q not found in wordmap", e.word)
+}
+func (e errInvalidMnemonicWord) Unwrap() error {
 	return e.errorType
 }
 
@@ -581,8 +600,9 @@ func ParseShare(mnemonic string) (Share, error) {
 	for i, v := range mnemonicData {
 		index, found := wordmap[v]
 		if !found {
-			return share,
-				fmt.Errorf("Invalid mnemonic: word `%v` not found in wordmap", v)
+			return share, errInvalidMnemonicWord{
+				word: v,
+			}
 		}
 		data[i] = index
 	}
