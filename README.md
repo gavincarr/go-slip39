@@ -4,6 +4,7 @@ go-slip39
 [![PkgGoDev](https://pkg.go.dev/badge/gavincarr/go-slip39)](https://pkg.go.dev/github.com/gavincarr/go-slip39)
 [![MIT License](https://img.shields.io/github/license/gavincarr/go-slip39.svg?maxAge=2592000&color=blue)](https://github.com/gavincarr/go-slip39/blob/master/LICENCE)
 
+[![Go Build Status](https://github.com/gavincarr/go-slip39/actions/workflows/go.yml/badge.svg)](https://github.com/gavincarr/go-slip39/actions/workflows/go.yml/badge.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gavincarr/go-slip39)](https://goreportcard.com/report/github.com/gavincarr/go-slip39)
 
 A SLIP-0039 library for Go. Specifically, this library is a port of the
