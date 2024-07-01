@@ -74,7 +74,7 @@ type secret struct {
 func mustLoadVectors(t *testing.T) []vector {
 	t.Helper()
 
-	data, err := os.ReadFile("vectors.json")
+	data, err := os.ReadFile("testdata/vectors.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func mustLoadVectors(t *testing.T) []vector {
 func mustLoadSecrets(t *testing.T) []secret {
 	t.Helper()
 
-	data, err := os.ReadFile("secrets.json")
+	data, err := os.ReadFile("testdata/secrets.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,15 +458,15 @@ func TestGenerateMnemonics(t *testing.T) {
 				t.Errorf("hex.DecodeString returned error: %s", err.Error())
 			}
 
-			var groupMnemonics [][]string
+			var shareGroups ShareGroups
 			if passphrase != "" {
-				groupMnemonics, err = GenerateMnemonicsWithOptions(
+				shareGroups, err = GenerateMnemonicsWithOptions(
 					s.GroupThreshold, s.MemberGroupParams,
 					masterSecretBytes, []byte(passphrase),
 					true, 0, // for some reason the python cli defaults to exponent=0
 				)
 			} else {
-				groupMnemonics, err = GenerateMnemonics(
+				shareGroups, err = GenerateMnemonics(
 					s.GroupThreshold, s.MemberGroupParams,
 					masterSecretBytes,
 				)
@@ -474,10 +474,10 @@ func TestGenerateMnemonics(t *testing.T) {
 			if err != nil {
 				t.Error(err)
 			}
-			//t.Logf("groupMnemonics (%d group(s)): %v\n", len(groupMnemonics), groupMnemonics)
+			//t.Logf("shareGroups (%d group(s)): %v\n", len(shareGroups), shareGroups)
 
 			if s.GroupThreshold == 1 {
-				for i, mnemonics := range groupMnemonics {
+				for i, mnemonics := range shareGroups {
 					// Test all threshold combinations of seeds
 					mgp := s.MemberGroupParams[i]
 					list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
@@ -489,15 +489,15 @@ func TestGenerateMnemonics(t *testing.T) {
 			} else {
 				// For multi-group test all combinations of groups with random
 				// sets of threshold seeds
-				groupSelections := make([][]string, 0, len(groupMnemonics))
-				for i, mnemonics := range groupMnemonics {
+				groupSelections := make([][]string, 0, len(shareGroups))
+				for i, mnemonics := range shareGroups {
 					mgp := s.MemberGroupParams[i]
 					selected := selectRandomShares(mgp, mnemonics)
 					groupSelections = append(groupSelections, selected)
 				}
 				//t.Logf("groupSelections: %v", groupSelections)
 
-				list := combin.Combinations(len(groupMnemonics), s.GroupThreshold)
+				list := combin.Combinations(len(shareGroups), s.GroupThreshold)
 				//t.Logf("selected: %v", list)
 				for _, selectedIndices := range list {
 					selected := selectAndFlattenSets(selectedIndices, groupSelections)

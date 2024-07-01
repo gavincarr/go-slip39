@@ -256,6 +256,85 @@ type rawShare struct {
 	data []byte
 }
 
+// ShareGroups is a slice of string slices, each comprising a group of slip39
+// shares
+type ShareGroups [][]string
+
+// String converts sg to a string with one share per line, output in share group
+// order
+func (sg ShareGroups) String() string {
+	var sb strings.Builder
+	for _, shares := range sg {
+		for _, share := range shares {
+			sb.WriteString(share + "\n")
+		}
+	}
+	return sb.String()
+}
+
+// StringLabelled converts sg to a string with each share word on a separate line
+// and prefixed with a numeric label formatted as follows:
+//
+//   - If there is only a single share group then the label is a
+//     3- or 4-digit number of the form:
+//
+//     share_number * 100 + word number e.g. 101, 102, ... 201, 202... etc.
+//
+//   - If there are multiple share groups then then label is a 4- to 6-digit
+//     number of the form:
+//
+//     group_number * 1000 + share number * 100 + word_number, OR:
+//     group_number * 10000 + share number * 100 + word_number
+//
+//     e.g. 1101, 1102... 1201, 1202..., 2101, 2102... etc. OR
+//     e.g. 10101, 10102... 10201, 10202..., 20101, 20102... etc.
+func (sg ShareGroups) StringLabelled() (string, error) {
+	maxShares := 0
+	for _, shares := range sg {
+		if len(shares) > maxShares {
+			maxShares = len(shares)
+		}
+	}
+
+	// Build format string
+	var sb strings.Builder
+	groupCount := len(sg)
+	if groupCount > 1 {
+		if groupCount <= 9 {
+			sb.WriteString("%d")
+		} else {
+			sb.WriteString("%02d")
+		}
+	}
+	if maxShares <= 9 {
+		sb.WriteString("%d")
+	} else {
+		sb.WriteString("%02d")
+	}
+	sb.WriteString("%02d %s\n")
+	lfmt := sb.String()
+
+	// Build output string
+	sb.Reset()
+	for g, shares := range sg {
+		for s, share := range shares {
+			words, err := SplitMnemonicWords(share)
+			if err != nil {
+				return "", fmt.Errorf("splitting share %q words: %w", share, err)
+			}
+			for w, word := range words {
+				if groupCount == 1 {
+					fmt.Fprintf(&sb, lfmt, s+1, w+1, word)
+				} else {
+					fmt.Fprintf(&sb, lfmt, g+1, s+1, w+1, word)
+				}
+			}
+		}
+	}
+
+	return sb.String(), nil
+}
+
 type encryptedMasterSecret struct {
 	identifier        int
 	extendable        bool
@@ -372,7 +451,9 @@ func cipherDecrypt(
 	return append(r, l...), nil
 }
 
-func splitMnemonicWords(mnemonic string) ([]string, error) {
+// SplitMnemonicWords splits mnemonic into a slice of words. If mnemonic
+// returns too few words for a slip39 mnemonic, it returns an error.
+func SplitMnemonicWords(mnemonic string) ([]string, error) {
 	words := strings.Fields(mnemonic)
 
 	if len(words) < minMnemonicLengthWords {
@@ -585,7 +666,7 @@ func (s Share) Mnemonic() (string, error) {
 func ParseShare(mnemonic string) (Share, error) {
 	var share Share
 
-	mnemonicData, err := splitMnemonicWords(strings.ToLower(mnemonic))
+	mnemonicData, err := SplitMnemonicWords(strings.ToLower(mnemonic))
 	if err != nil {
 		return share, err
 	}
@@ -1132,7 +1213,7 @@ func GenerateMnemonicsWithOptions(
 	passphrase []byte,
 	extendable bool,
 	iterationExponent int,
-) ([][]string, error) {
+) (ShareGroups, error) {
 	if err := checkPassphrase(passphrase); err != nil {
 		return nil, err
 	}
@@ -1151,7 +1232,7 @@ func GenerateMnemonicsWithOptions(
 		return nil, err
 	}
 
-	groupMnemonics := make([][]string, 0, len(groupedShares))
+	groupMnemonics := make(ShareGroups, 0, len(groupedShares))
 	for _, group := range groupedShares {
 		mnemonics := make([]string, 0, len(group))
 		for _, share := range group {
@@ -1178,7 +1259,7 @@ func GenerateMnemonics(
 	groupThreshold int,
 	groups []MemberGroupParameters,
 	masterSecret []byte,
-) ([][]string, error) {
+) (ShareGroups, error) {
 	return GenerateMnemonicsWithOptions(
 		groupThreshold, groups, masterSecret, []byte{}, true, 1,
 	)
@@ -1192,7 +1273,7 @@ func GenerateMnemonicsWithPassphrase(
 	groups []MemberGroupParameters,
 	masterSecret []byte,
 	passphrase []byte,
-) ([][]string, error) {
+) (ShareGroups, error) {
 	return GenerateMnemonicsWithOptions(
 		groupThreshold, groups, masterSecret, passphrase, true, 1,
 	)
