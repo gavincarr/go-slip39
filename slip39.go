@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
@@ -60,6 +61,8 @@ var (
 
 	expTable = []int{}
 	logTable = []int{}
+
+	reLabel = regexp.MustCompile(`^\d{3,6}$`)
 )
 
 // ErrTooFewShares is returned when the number of groups or shares supplied
@@ -333,6 +336,158 @@ func (sg ShareGroups) StringLabelled() (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+func checkBadLabel(
+	groupNum, shareNum, wordNum, lastGroup, lastShare, lastWord int,
+	label, lastLabel, word string,
+) error {
+	if shareNum == 0 {
+		return fmt.Errorf("invalid label %q for %q - shareNum cannot be 0",
+			label, word)
+	}
+	if wordNum == 0 {
+		return fmt.Errorf("invalid label %q for %q - wordNum cannot be 0",
+			label, word)
+	}
+	if groupNum > lastGroup+1 || groupNum < lastGroup {
+		if lastGroup == 0 {
+			return fmt.Errorf("invalid label %q - first groupNum should be 1, not %d",
+				label, groupNum)
+		} else {
+			return fmt.Errorf("invalid label %q after %q - groupNums %d and %d are not consecutive",
+				label, lastLabel, lastGroup, groupNum)
+		}
+	} else if groupNum == lastGroup && (shareNum > lastShare+1 || shareNum < lastShare) {
+		if lastShare == 0 {
+			return fmt.Errorf("invalid label %q - first shareNum must be 1, not %d",
+				label, shareNum)
+		} else {
+			return fmt.Errorf("invalid label %q after %q - shareNums %d and %d are not consecutive",
+				label, lastLabel, lastShare, shareNum)
+		}
+	}
+
+	// Exactly one of groupNum, shareNum, wordNum should increment by 1
+	if groupNum == lastGroup+1 {
+		if shareNum != 1 || wordNum != 1 {
+			return fmt.Errorf("bad label %q - groupNum %d has incremented, so both shareNum and wordNum should be 1",
+				label, groupNum)
+		}
+	} else if shareNum == lastShare+1 {
+		if wordNum != 1 {
+			return fmt.Errorf("bad label %q - shareNum %d has incremented, so wordNum should be 1",
+				label, shareNum)
+		}
+	} else if wordNum != lastWord+1 {
+		if lastWord == 0 {
+			return fmt.Errorf("bad label %q - first wordNum must be 1, not %d",
+				label, wordNum)
+		} else {
+			return fmt.Errorf("bad label %q after %q - wordNums %d and %d are not consecutive",
+				label, lastLabel, lastWord, wordNum)
+		}
+	}
+
+	return nil
+}
+
+func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
+	groups := make(ShareGroups, 0)
+	group := make([]string, 0)
+	share := make([]string, 0, 33)
+	lines := strings.Split(strings.TrimSpace(labelledShares), "\n")
+	lastGroup := 0
+	lastShare := 0
+	lastWord := 0
+	lastLabel := ""
+	for lineno, line := range lines {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 {
+			return nil,
+				fmt.Errorf("invalid line %d %q - expected <label> <word>",
+					lineno+1, line)
+		}
+		label := fields[0]
+		word := fields[1]
+		if !reLabel.MatchString(label) {
+			return nil,
+				fmt.Errorf("invalid label %q on line %d - expected 3-6 digits",
+					label, lineno+1)
+		}
+
+		// Parse label
+		var groupNum, shareNum, wordNum int
+		var err error
+		if len(label) == 3 {
+			_, err = fmt.Sscanf(line, "%1d%2d", &shareNum, &wordNum)
+		} else if len(label) == 4 {
+			if label[0] == '0' {
+				_, err = fmt.Sscanf(line, "%2d%2d", &shareNum, &wordNum)
+			} else {
+				_, err = fmt.Sscanf(line, "%1d%1d%2d",
+					&groupNum, &shareNum, &wordNum)
+			}
+		} else if len(label) == 5 {
+			if label[0] == '0' {
+				_, err = fmt.Sscanf(line, "%2d%1d%2d",
+					&groupNum, &shareNum, &wordNum)
+			} else {
+				_, err = fmt.Sscanf(line, "%1d%2d%2d",
+					&groupNum, &shareNum, &wordNum)
+			}
+		} else {
+			_, err = fmt.Sscanf(line, "%2d%2d%2d",
+				&groupNum, &shareNum, &wordNum)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parsing label %q in line %d: %w",
+				label, lineno+1, err)
+		}
+		/*
+			fmt.Fprintf(os.Stderr, "label %q: group %d, share %d, word %02d == %s\n",
+				label, groupNum, shareNum, wordNum, word)
+		*/
+
+		// Check groupNum/shareNum/wordNum error conditions
+		err = checkBadLabel(groupNum, shareNum, wordNum,
+			lastGroup, lastShare, lastWord, label, lastLabel, word)
+		if err != nil {
+			return nil, err
+		}
+
+		// Add to groups
+		// Exactly one of groupNum, shareNum, wordNum should increment by 1
+		if groupNum == lastGroup+1 {
+			// New group - save last and reset
+			if len(share) > 0 {
+				sharestr := strings.Join(share, " ")
+				group = append(group, sharestr)
+				groups = append(groups, group)
+				group = make([]string, 0)
+				share = make([]string, 0, 33)
+			}
+			lastGroup = groupNum
+			lastShare = shareNum
+		} else if shareNum == lastShare+1 {
+			// New share - save last and reset
+			if len(share) > 0 {
+				sharestr := strings.Join(share, " ")
+				group = append(group, sharestr)
+				share = make([]string, 0, 33)
+			}
+			lastShare = shareNum
+		}
+		share = append(share, word)
+		lastWord = wordNum
+		lastLabel = label
+	}
+	if len(share) > 0 {
+		sharestr := strings.Join(share, " ")
+		group = append(group, sharestr)
+		groups = append(groups, group)
+	}
+	return groups, nil
 }
 
 type encryptedMasterSecret struct {

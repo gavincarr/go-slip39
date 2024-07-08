@@ -467,8 +467,7 @@ func TestGenerateMnemonics(t *testing.T) {
 				)
 			} else {
 				shareGroups, err = GenerateMnemonics(
-					s.GroupThreshold, s.MemberGroupParams,
-					masterSecretBytes,
+					s.GroupThreshold, s.MemberGroupParams, masterSecretBytes,
 				)
 			}
 			if err != nil {
@@ -509,6 +508,208 @@ func TestGenerateMnemonics(t *testing.T) {
 			if to > 0 && i+1 >= to {
 				break
 			}
+		}
+	}
+}
+
+// Test ShareGroups.String() and StringLabelled() methods
+func TestShareGroupsStringMethods(t *testing.T) {
+	t.Parallel()
+
+	secrets := mustLoadSecrets(t)
+	from, to := parseArgs(t)
+
+	for i, s := range secrets {
+		if from > 0 && i+1 < from {
+			continue
+		}
+		//fmt.Fprintf(os.Stderr, "secret: %v\n", s)
+
+		masterSecretBytes, err := hex.DecodeString(s.MasterSecret)
+		if err != nil {
+			t.Errorf("hex.DecodeString returned error: %s", err.Error())
+		}
+
+		shareGroups, err := GenerateMnemonics(
+			s.GroupThreshold, s.MemberGroupParams, masterSecretBytes,
+		)
+		if err != nil {
+			t.Error(err)
+		}
+		//t.Logf("shareGroups (%d group(s)): %v\n", len(shareGroups), shareGroups)
+
+		str := shareGroups.String()
+		//t.Logf("[%d] shareGroups.String(): %s", i+1, str)
+
+		lstr, err := shareGroups.StringLabelled()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//t.Logf("[%d] shareGroups.StringLabelled(): %s", i+1, lstr)
+
+		// Recombine the labelled shares
+		sg2, err := CombineLabelledShares(lstr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		str2 := sg2.String()
+		if str2 != str {
+			t.Errorf("CombineLabelledShares mismatch: want:\n%sgot:\n%s",
+				str, str2)
+		}
+
+		if to > 0 && i+1 >= to {
+			break
+		}
+	}
+}
+
+// Test ShareGroups.StringLabelled() failures
+func TestShareGroupsStringLabelled_Failures(t *testing.T) {
+	t.Parallel()
+
+	var tests = []struct {
+		label string
+		input string
+	}{
+		// 3-digit SW non-consecutive wordNum
+		{"3-digit SW non-consecutive wordNum",
+			"101 duckling\n103 enlarge"},
+		{"3-digit SW non-consecutive wordNum",
+			"101 duckling\n101 enlarge"},
+		{"3-digit SW non-consecutive wordNum",
+			"102 duckling\n101 enlarge"},
+		{"3-digit SW non-consecutive wordNum",
+			"105 duckling\n101 enlarge"},
+		// 3-digit SW non-consecutive shareNum
+		{"3-digit SW non-consecutive shareNum",
+			"101 duckling\n301 enlarge"},
+		{"3-digit SW non-consecutive shareNum",
+			"101 duckling\n101 enlarge"},
+		{"3-digit SW non-consecutive shareNum",
+			"301 duckling\n101 enlarge"},
+		{"3-digit SW non-consecutive shareNum",
+			"501 duckling\n201 enlarge"},
+		// 4-digit SW non-consecutive wordNum
+		{"4-digit SW non-consecutive wordNum",
+			"0101 duckling\n0103 enlarge"},
+		{"4-digit SW non-consecutive wordNum",
+			"0101 duckling\n0101 enlarge"},
+		{"4-digit SW non-consecutive wordNum",
+			"0102 duckling\n0101 enlarge"},
+		{"4-digit SW non-consecutive wordNum",
+			"0105 duckling\n0101 enlarge"},
+		// 4-digit SW non-consecutive shareNum
+		{"4-digit SW non-consecutive shareNum",
+			"0101 duckling\n0301 enlarge"},
+		{"4-digit SW non-consecutive shareNum",
+			"0101 duckling\n0101 enlarge"},
+		{"4-digit SW non-consecutive shareNum",
+			"0301 duckling\n0101 enlarge"},
+		{"4-digit SW non-consecutive shareNum",
+			"0501 duckling\n0201 enlarge"},
+		// 5-digit GSW non-consecutive wordNum
+		{"5-digit GSW non-consecutive wordNum",
+			"10101 duckling\n10103 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"10101 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"10102 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"10105 duckling\n10101 enlarge"},
+		// 5-digit GSW non-consecutive shareNum
+		{"5-digit GSW non-consecutive shareNum",
+			"10101 duckling\n10301 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"10101 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"10301 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"10501 duckling\n10201 enlarge"},
+		// 5-digit GSW non-consecutive groupNum
+		{"5-digit GSW non-consecutive groupNum",
+			"10101 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"20101 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"30101 duckling\n10101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"10101 duckling\n30101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"10101 duckling\n90101 enlarge"},
+		// 5-digit GSW non-consecutive wordNum
+		{"5-digit GSW non-consecutive wordNum",
+			"01101 duckling\n01103 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"01101 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"01102 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive wordNum",
+			"01105 duckling\n01101 enlarge"},
+		// 5-digit GSW non-consecutive shareNum
+		{"5-digit GSW non-consecutive shareNum",
+			"01101 duckling\n01301 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"01101 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"01301 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive shareNum",
+			"01501 duckling\n01201 enlarge"},
+		// 5-digit GSW non-consecutive groupNum
+		{"5-digit GSW non-consecutive groupNum",
+			"01101 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"02101 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"03101 duckling\n01101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"01101 duckling\n03101 enlarge"},
+		{"5-digit GSW non-consecutive groupNum",
+			"01101 duckling\n09101 enlarge"},
+		// 6-digit GSW non-consecutive wordNum
+		{"6-digit GSW non-consecutive wordNum",
+			"010101 duckling\n010103 enlarge"},
+		{"6-digit GSW non-consecutive wordNum",
+			"010101 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive wordNum",
+			"010102 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive wordNum",
+			"010105 duckling\n010101 enlarge"},
+		// 6-digit GSW non-consecutive shareNum
+		{"6-digit GSW non-consecutive shareNum",
+			"010101 duckling\n010301 enlarge"},
+		{"6-digit GSW non-consecutive shareNum",
+			"010101 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive shareNum",
+			"010301 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive shareNum",
+			"010501 duckling\n010201 enlarge"},
+		// 6-digit GSW non-consecutive groupNum
+		{"6-digit GSW non-consecutive groupNum",
+			"010101 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive groupNum",
+			"020101 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive groupNum",
+			"030101 duckling\n010101 enlarge"},
+		{"6-digit GSW non-consecutive groupNum",
+			"010101 duckling\n030101 enlarge"},
+		{"6-digit GSW non-consecutive groupNum",
+			"010101 duckling\n090101 enlarge"},
+		// Mixed-style labels
+		{"Mixed-style labels",
+			"010101 duckling\n0102 enlarge"},
+		{"Mixed-style labels",
+			"0101 duckling\n10102 enlarge"},
+	}
+
+	for _, tc := range tests {
+		sg, err := CombineLabelledShares(tc.input)
+		if err == nil {
+			t.Errorf("%q test unexpectedly passed:\n%s", tc.label, sg.String())
+			/*
+				} else {
+					t.Logf("%q test failed as expected: %s", tc.label, err.Error())
+			*/
 		}
 	}
 }
