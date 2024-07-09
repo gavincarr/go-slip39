@@ -15,10 +15,12 @@ import (
 	"fmt"
 	"math/big"
 	"regexp"
+	"sort"
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/xdg-go/pbkdf2"
+	"golang.org/x/exp/maps"
 	"gonum.org/v1/gonum/stat/combin"
 )
 
@@ -1025,6 +1027,32 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 		return nil, ErrInvalidCommonParameters
 	}
 	return groups, nil
+}
+
+// CollateShareGroups createa a ShareGroups slice from a slice of mnemonics,
+func CollateShareGroups(mnemonics []string) (ShareGroups, error) {
+	groups, err := newShareGroupMap(mnemonics)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := maps.Keys(groups)
+	sort.Ints(keys)
+
+	shareGroups := make(ShareGroups, len(groups))
+	for _, k := range keys {
+		mnemonics := make([]string, len(groups[k].shares))
+		for i, s := range groups[k].shares {
+			mnemonic, err := s.Mnemonic()
+			if err != nil {
+				return nil, err
+			}
+			mnemonics[i] = mnemonic
+		}
+		shareGroups[k] = mnemonics
+	}
+
+	return shareGroups, nil
 }
 
 func (group shareGroup) toRawShares() []rawShare {

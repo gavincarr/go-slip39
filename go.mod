@@ -7,4 +7,7 @@ require (
 	github.com/xdg-go/pbkdf2 v1.0.0
 )
 
-require gonum.org/v1/gonum v0.15.0 // indirect
+require (
+	golang.org/x/exp v0.0.0-20240707233637-46b078467d37 // indirect
+	gonum.org/v1/gonum v0.15.0 // indirect
+)
