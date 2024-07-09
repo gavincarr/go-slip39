@@ -52,7 +52,7 @@ const (
 	digestIndex        = 254   // The index of the shared secret digest share
 
 	// Limit the combinatorial explosion possible with ValidateMnemomics
-	MaxCombinations = 100
+	maxCombinations = 100
 )
 
 var (
@@ -150,6 +150,8 @@ func (e errBadGroupThreshold) Unwrap() error {
 	return e.errorType
 }
 
+// ErrInvalidMnemonicWord is returned when a mnemonic word is not found in the
+// reference wordlist
 type ErrInvalidMnemonicWord struct{}
 type errInvalidMnemonicWord struct {
 	errorType ErrInvalidMnemonicWord
@@ -219,7 +221,7 @@ var (
 
 	// ErrTooManyCombinations is returned when the number of share combinations
 	// is too many for ValidateMnemonics to test exhaustively
-	ErrTooManyCombinations = fmt.Errorf("too many combinations (more than %d)", MaxCombinations)
+	ErrTooManyCombinations = fmt.Errorf("too many combinations (more than %d)", maxCombinations)
 )
 
 // MemberGroupParameters define the (MemberThreshold, MemberCount) pairs required
@@ -287,7 +289,7 @@ func selectIndices(indices [][]int, group []string) [][]string {
 // and member threshold requirements. It returns a slice of combinations, each
 // of which is a minimal slice of mnemonics sufficient to reproduce the
 // underlying master secret. Returns an error if the share groups are invalid
-// or if the number of combinations found exceeds MaxCombinations.
+// or if the number of combinations found exceeds maxCombinations.
 func (sg ShareGroups) combinations() ([][]string, error) {
 	// Generate groupCombinations satisfying memberThresholds
 	groupCombinations := make([][][]string, len(sg))
@@ -318,7 +320,7 @@ func (sg ShareGroups) combinations() ([][]string, error) {
 
 		// Generate memberThreshold share combinations for the group
 		indices := combin.Combinations(len(group), memberThreshold)
-		if len(indices) > MaxCombinations {
+		if len(indices) > maxCombinations {
 			return nil, ErrTooManyCombinations
 		}
 		groupCombinations[i] = selectIndices(indices, group)
@@ -353,7 +355,7 @@ func (sg ShareGroups) combinations() ([][]string, error) {
 			}
 			//fmt.Fprintf(os.Stderr, "shares [%d] (%d): %v\n", i, len(shares), shares)
 			shareCombinations = append(shareCombinations, shares)
-			if len(shareCombinations) > MaxCombinations {
+			if len(shareCombinations) > maxCombinations {
 				return nil, ErrTooManyCombinations
 			}
 			shares = make([]string, 0)
@@ -454,18 +456,16 @@ func checkBadLabel(
 		if lastGroup == 0 {
 			return fmt.Errorf("invalid label %q - first groupNum should be 1, not %d",
 				label, groupNum)
-		} else {
-			return fmt.Errorf("invalid label %q after %q - groupNums %d and %d are not consecutive",
-				label, lastLabel, lastGroup, groupNum)
 		}
+		return fmt.Errorf("invalid label %q after %q - groupNums %d and %d are not consecutive",
+			label, lastLabel, lastGroup, groupNum)
 	} else if groupNum == lastGroup && (shareNum > lastShare+1 || shareNum < lastShare) {
 		if lastShare == 0 {
 			return fmt.Errorf("invalid label %q - first shareNum must be 1, not %d",
 				label, shareNum)
-		} else {
-			return fmt.Errorf("invalid label %q after %q - shareNums %d and %d are not consecutive",
-				label, lastLabel, lastShare, shareNum)
 		}
+		return fmt.Errorf("invalid label %q after %q - shareNums %d and %d are not consecutive",
+			label, lastLabel, lastShare, shareNum)
 	}
 
 	// Exactly one of groupNum, shareNum, wordNum should increment by 1
@@ -483,10 +483,9 @@ func checkBadLabel(
 		if lastWord == 0 {
 			return fmt.Errorf("bad label %q - first wordNum must be 1, not %d",
 				label, wordNum)
-		} else {
-			return fmt.Errorf("bad label %q after %q - wordNums %d and %d are not consecutive",
-				label, lastLabel, lastWord, wordNum)
 		}
+		return fmt.Errorf("bad label %q after %q - wordNums %d and %d are not consecutive",
+			label, lastLabel, lastWord, wordNum)
 	}
 
 	return nil
