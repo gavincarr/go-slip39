@@ -19,6 +19,7 @@ import (
 
 	mapset "github.com/deckarep/golang-set/v2"
 	"github.com/xdg-go/pbkdf2"
+	"gonum.org/v1/gonum/stat/combin"
 )
 
 const (
@@ -49,6 +50,9 @@ const (
 	roundCount         = 4     // The number of rounds to use in the Feistel cipher
 	secretIndex        = 255   // The index of the shared secret share
 	digestIndex        = 254   // The index of the shared secret digest share
+
+	// Limit the combinatorial explosion possible with ValidateMnemomics
+	MaxCombinations = 100
 )
 
 var (
@@ -212,6 +216,10 @@ var (
 	// ErrInvalidPassphrase is returned when a passphrase contains invalid
 	// characters
 	ErrInvalidPassphrase = errors.New("the passphrase must contain only printable ASCII characters (code points 32-126)")
+
+	// ErrTooManyCombinations is returned when the number of share combinations
+	// is too many for ValidateMnemonics to test exhaustively
+	ErrTooManyCombinations = fmt.Errorf("too many combinations (more than %d)", MaxCombinations)
 )
 
 // MemberGroupParameters define the (MemberThreshold, MemberCount) pairs required
@@ -262,6 +270,98 @@ type rawShare struct {
 // ShareGroups is a slice of string slices, each comprising a group of slip39
 // shares
 type ShareGroups [][]string
+
+func selectIndices(indices [][]int, group []string) [][]string {
+	combinations := make([][]string, len(indices))
+	for i, idx := range indices {
+		combination := make([]string, len(idx))
+		for j, k := range idx {
+			combination[j] = group[k]
+		}
+		combinations[i] = combination
+	}
+	return combinations
+}
+
+// combinations returns all combinations of shares in sg that meet the group
+// and member threshold requirements. It returns a slice of combinations, each
+// of which is a minimal slice of mnemonics sufficient to reproduce the
+// underlying master secret. Returns an error if the share groups are invalid
+// or if the number of combinations found exceeds MaxCombinations.
+func (sg ShareGroups) combinations() ([][]string, error) {
+	// Generate groupCombinations satisfying memberThresholds
+	groupCombinations := make([][][]string, len(sg))
+	groupThreshold := 0
+	for i, group := range sg {
+		if len(group) == 0 {
+			return nil, ErrEmptyShareGroup
+		}
+
+		// Parse the first share in the group to get the member threshold
+		memberThreshold := 0
+		share, err := ParseShare(group[0])
+		if err != nil {
+			return nil, fmt.Errorf("parsing share %q: %w", group[0], err)
+		}
+		if groupThreshold == 0 {
+			groupThreshold = share.GroupThreshold
+		} else if share.GroupThreshold != groupThreshold {
+			return nil,
+				errors.New("all share groups do not have the same group threshold")
+		}
+		memberThreshold = share.MemberThreshold
+		if memberThreshold > len(group) {
+			return nil,
+				fmt.Errorf("member threshold %d exceeds group size %d",
+					memberThreshold, len(group))
+		}
+
+		// Generate memberThreshold share combinations for the group
+		indices := combin.Combinations(len(group), memberThreshold)
+		if len(indices) > MaxCombinations {
+			return nil, ErrTooManyCombinations
+		}
+		groupCombinations[i] = selectIndices(indices, group)
+	}
+
+	// Generate groupThreshold combinations of the groups
+	groupIndicesCombinations := combin.Combinations(
+		len(groupCombinations), groupThreshold,
+	)
+	//fmt.Fprintf(os.Stderr, "groupIndicesCombinations: %v\n", groupIndicesCombinations)
+
+	// For each set of groupIndices, produce the cartesian product of
+	// groupCombinations elements
+	shareCombinations := [][]string{}
+	for _, groupIndices := range groupIndicesCombinations {
+		//fmt.Fprintf(os.Stderr, "groupIndices [%d]: %v\n", i, groupIndices)
+		productDimensions := make([]int, len(groupIndices))
+		for j, groupIndex := range groupIndices {
+			productDimensions[j] = len(groupCombinations[groupIndex])
+		}
+		//fmt.Fprintf(os.Stderr, "productDimensions [%d]: %v\n", i, productDimensions)
+
+		productIndices := combin.Cartesian(productDimensions)
+		//fmt.Fprintf(os.Stderr, "productIndices [%d] (len %d): %v\n", i, len(productIndices), productIndices)
+
+		// Map productIndices back to groupCombinations shares
+		shares := make([]string, 0)
+		for _, productIndex := range productIndices {
+			for i, groupIndex := range groupIndices {
+				selected := productIndex[i]
+				shares = append(shares, groupCombinations[groupIndex][selected]...)
+			}
+			//fmt.Fprintf(os.Stderr, "shares [%d] (%d): %v\n", i, len(shares), shares)
+			shareCombinations = append(shareCombinations, shares)
+			if len(shareCombinations) > MaxCombinations {
+				return nil, ErrTooManyCombinations
+			}
+			shares = make([]string, 0)
+		}
+	}
+
+	return shareCombinations, nil
+}
 
 // String converts sg to a string with one share per line, output in share group
 // order
@@ -392,6 +492,10 @@ func checkBadLabel(
 	return nil
 }
 
+// CombineLabelledShares converts a string containing a set of labelled shares,
+// one per line, in "<label> <word>" format, into a ShareGroups slice.
+// It checks that the labels are in a consistent format, and are consecutive
+// by group, share, and word order, and returns an error if not.
 func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 	groups := make(ShareGroups, 0)
 	group := make([]string, 0)
@@ -1284,45 +1388,6 @@ func recoverEMS(groups shareGroupMap) (encryptedMasterSecret, error) {
 	}, nil
 }
 
-// CombineMnemonicsWithPassphrase combines mnemonics protected with a passphrase
-// to give the master secret which was originally split into shares using
-// Shamir's Secret Sharing Scheme,
-func CombineMnemonicsWithPassphrase(
-	mnemonics []string,
-	passphrase []byte,
-) ([]byte, error) {
-	if len(mnemonics) == 0 {
-		return nil, errors.New("the list of mnemonics is empty")
-	}
-
-	groups, err := newShareGroupMap(mnemonics)
-	if err != nil {
-		return nil, err
-	}
-	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: %d mnemonic(s), %d group(s), %d share(s) in group 1, groups %v\n", len(mnemonics), len(groups), len(groups[0].shares), groups)
-	ems, err := recoverEMS(groups)
-	if err != nil {
-		return nil, err
-	}
-	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: ems %v\n", ems)
-	masterSecret, err := ems.decrypt(passphrase)
-	if err != nil {
-		return nil, err
-	}
-
-	return masterSecret, nil
-}
-
-// CombineMnemonics combines mnemonics into the master secret which was
-// originally split into shares using Shamir's Secret Sharing Scheme
-// (without a passphrase).
-//
-// The CombineMnenonics functions are the standard entry points for recovering
-// the master secret from a set of slip39 mnemonics.
-func CombineMnemonics(mnemonics []string) ([]byte, error) {
-	return CombineMnemonicsWithPassphrase(mnemonics, []byte{})
-}
-
 func checkPassphrase(passphrase []byte) error {
 	for _, c := range passphrase {
 		if c < 32 || c > 126 {
@@ -1339,6 +1404,36 @@ func randomIdentifier() (int, error) {
 		return -1, err
 	}
 	return int(i.Int64()) & ((1 << idLengthBits) - 1), nil
+}
+
+// GenerateMnemonics splits masterSecret into mnemonic shares using Shamir's
+// secret sharing scheme.
+// See GenerateMnemonicsWithOptions for parameter documenantation.
+//
+// The GenerateMnenonics functions are the standard entry points for splitting
+// a master secret into slip39 mnemonic shares.
+func GenerateMnemonics(
+	groupThreshold int,
+	groups []MemberGroupParameters,
+	masterSecret []byte,
+) (ShareGroups, error) {
+	return GenerateMnemonicsWithOptions(
+		groupThreshold, groups, masterSecret, []byte{}, true, 1,
+	)
+}
+
+// GenerateMnemonicsWithPassphrase splits masterSecret into mnemonic shares
+// protected by a passphrase using Shamir's secret sharing scheme.
+// See GenerateMnemonicsWithOptions for parameter documenantation.
+func GenerateMnemonicsWithPassphrase(
+	groupThreshold int,
+	groups []MemberGroupParameters,
+	masterSecret []byte,
+	passphrase []byte,
+) (ShareGroups, error) {
+	return GenerateMnemonicsWithOptions(
+		groupThreshold, groups, masterSecret, passphrase, true, 1,
+	)
 }
 
 // GenerateMnemonicsWithOptions splits masterSecret into mnemonic shares
@@ -1404,32 +1499,95 @@ func GenerateMnemonicsWithOptions(
 	return groupMnemonics, nil
 }
 
-// GenerateMnemonics splits masterSecret into mnemonic shares using Shamir's
-// secret sharing scheme.
-// See GenerateMnemonicsWithOptions for parameter documenantation.
+// CombineMnemonics combines mnemonics into the master secret which was
+// originally split into shares using Shamir's Secret Sharing Scheme
+// (without a passphrase).
 //
-// The GenerateMnenonics functions are the standard entry points for splitting
-// a master secret into slip39 mnemonic shares.
-func GenerateMnemonics(
-	groupThreshold int,
-	groups []MemberGroupParameters,
-	masterSecret []byte,
-) (ShareGroups, error) {
-	return GenerateMnemonicsWithOptions(
-		groupThreshold, groups, masterSecret, []byte{}, true, 1,
-	)
+// It requires a slice of mnemonics that contains a minimal quorum of shares
+// for each required group (e.g. if the shares were generated with a 1of2 group
+// and a 3of5 group, then 1 share from the first group and 3 from the second
+// group must be supplied.
+//
+// The CombineMnenonics functions are the standard entry points for recovering
+// the master secret from a set of slip39 mnemonics.
+func CombineMnemonics(mnemonics []string) ([]byte, error) {
+	return CombineMnemonicsWithPassphrase(mnemonics, []byte{})
 }
 
-// GenerateMnemonicsWithPassphrase splits masterSecret into mnemonic shares
-// protected by a passphrase using Shamir's secret sharing scheme.
-// See GenerateMnemonicsWithOptions for parameter documenantation.
-func GenerateMnemonicsWithPassphrase(
-	groupThreshold int,
-	groups []MemberGroupParameters,
-	masterSecret []byte,
+// CombineMnemonicsWithPassphrase combines mnemonics protected with a passphrase
+// to give the master secret which was originally split into shares using
+// Shamir's Secret Sharing Scheme,
+//
+// It requires a slice of mnemonics that contains a minimal quorum of shares
+// for each required group (e.g. if the shares were generated with a 1of2 group
+// and a 3of5 group, then 1 share from the first group and 3 from the second
+// group must be supplied.
+func CombineMnemonicsWithPassphrase(
+	mnemonics []string,
 	passphrase []byte,
-) (ShareGroups, error) {
-	return GenerateMnemonicsWithOptions(
-		groupThreshold, groups, masterSecret, passphrase, true, 1,
-	)
+) ([]byte, error) {
+	if len(mnemonics) == 0 {
+		return nil, errors.New("the list of mnemonics is empty")
+	}
+
+	groups, err := newShareGroupMap(mnemonics)
+	if err != nil {
+		return nil, err
+	}
+	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: %d mnemonic(s), %d group(s), %d share(s) in group 1, groups %v\n", len(mnemonics), len(groups), len(groups[0].shares), groups)
+	ems, err := recoverEMS(groups)
+	if err != nil {
+		return nil, err
+	}
+	//fmt.Fprintf(os.Stderr, "CombineMnemonicsWithPassphrase: ems %v\n", ems)
+	masterSecret, err := ems.decrypt(passphrase)
+	if err != nil {
+		return nil, err
+	}
+
+	return masterSecret, nil
+}
+
+// ValidateMnemonics generates the exhaustive set of share combinations for sg
+// that satisfy the groupThreshold and memberThreshold requirements, and calls
+// CombineMnemonics on each one, confirming they all produce the same master
+// secret.
+// Returns the master secret produced and the number of share combinations tested,
+// or an error.
+func (sg ShareGroups) ValidateMnemonics() ([]byte, int, error) {
+	return sg.ValidateMnemonicsWithPassphrase([]byte{})
+}
+
+// ValidateMnemonicsWithPassphrase generates the exhaustive set of share
+// combinations for sg that satisfy the groupThreshold and memberThreshold
+// requirements, and calls CombineMnemonicsWithPassphrase on each one,
+// confirming they all produce the same master secret.
+// Returns the master secret produced and the number of share combinations tested,
+// or an error.
+func (sg ShareGroups) ValidateMnemonicsWithPassphrase(
+	passphrase []byte,
+) ([]byte, int, error) {
+	combinations, err := sg.combinations()
+	if err != nil {
+		return nil, 0, err
+	}
+
+	secret := []byte{}
+	for _, mnemonics := range combinations {
+		masterSecret, err := CombineMnemonicsWithPassphrase(mnemonics, passphrase)
+		if err != nil {
+			return nil, 0, fmt.Errorf("combining mnemonics: %w", err)
+		}
+		if len(secret) == 0 {
+			secret = masterSecret
+			continue
+		}
+		if !bytes.Equal(secret, masterSecret) {
+			return nil, 0,
+				errors.New("ValidateMnemonics produced mismatched master secrets")
+		}
+	}
+
+	// Success!
+	return secret, len(combinations), nil
 }

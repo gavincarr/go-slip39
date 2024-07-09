@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -475,38 +476,104 @@ func TestGenerateMnemonics(t *testing.T) {
 			}
 			//t.Logf("shareGroups (%d group(s)): %v\n", len(shareGroups), shareGroups)
 
-			if s.GroupThreshold == 1 {
-				for i, mnemonics := range shareGroups {
-					// Test all threshold combinations of seeds
-					mgp := s.MemberGroupParams[i]
-					list := combin.Combinations(mgp.MemberCount, mgp.MemberThreshold)
-					for _, selectedIndices := range list {
-						selected := selectShares(selectedIndices, mnemonics)
-						checkSelectedMnemonics(t, s, passphrase, selectedIndices, selected)
-					}
+			//secretBytes, combinations, err := shareGroups.ValidateMnemonicsWithPassphrase([]byte(passphrase))
+			secretBytes, _, err := shareGroups.ValidateMnemonicsWithPassphrase([]byte(passphrase))
+			if err != nil {
+				if err == ErrTooManyCombinations {
+					continue
 				}
-			} else {
-				// For multi-group test all combinations of groups with random
-				// sets of threshold seeds
-				groupSelections := make([][]string, 0, len(shareGroups))
-				for i, mnemonics := range shareGroups {
-					mgp := s.MemberGroupParams[i]
-					selected := selectRandomShares(mgp, mnemonics)
-					groupSelections = append(groupSelections, selected)
-				}
-				//t.Logf("groupSelections: %v", groupSelections)
-
-				list := combin.Combinations(len(shareGroups), s.GroupThreshold)
-				//t.Logf("selected: %v", list)
-				for _, selectedIndices := range list {
-					selected := selectAndFlattenSets(selectedIndices, groupSelections)
-					//t.Logf("selected: %v", selected)
-					checkSelectedMnemonics(t, s, passphrase, selectedIndices, selected)
-				}
+				t.Fatal(err)
 			}
+			secret := hex.EncodeToString(secretBytes)
+			if secret != s.MasterSecret {
+				t.Fatalf("ValidateMnemonics secret mismatch: got %q, want %q",
+					secret, s.MasterSecret)
+			}
+			//t.Logf("combinations: %d, secret: %s", combinations, secret)
 
 			if to > 0 && i+1 >= to {
 				break
+			}
+		}
+	}
+}
+
+// Test ShareGroups.combinations method
+func TestShareGroupsCombinations(t *testing.T) {
+	t.Parallel()
+
+	var tests = []struct {
+		groupThreshold    int
+		memberGroupParams []MemberGroupParameters
+		quorumLength      int
+	}{
+		// Test: 1 of: 3of5
+		{1, []MemberGroupParameters{{3, 5}}, 3},
+		// Test: 2 of: 1of1 + 2of3
+		{2, []MemberGroupParameters{{1, 1}, {2, 3}}, 3},
+		// Test: 2 of: 2of3 + 3of5
+		{2, []MemberGroupParameters{{2, 3}, {3, 5}}, 5},
+		// Test: 2 of: 1of1 + 2of3 + 2of3
+		{2, []MemberGroupParameters{{1, 1}, {2, 3}, {2, 3}}, 0},
+	}
+
+	secret := "989baf9dcaad5b10ca33dfd8cc75e42477025dce88ae83e75a230086a0e00e92"
+	secretBytes, err := hex.DecodeString(secret)
+	if err != nil {
+		t.Errorf("hex.DecodeString returned error: %s", err.Error())
+	}
+
+	for _, tc := range tests {
+		shareGroups, err := GenerateMnemonics(
+			tc.groupThreshold, tc.memberGroupParams, secretBytes,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		/*
+			for i, sg := range shareGroups {
+				t.Logf("shareGroup %d:\n%s\n", i, strings.Join(sg, "\n"))
+			}
+		*/
+
+		groupCombinations, err := shareGroups.combinations()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//t.Logf("groupCombinations: %d", len(groupCombinations))
+
+		// Test validity:
+		// - the number of shares should be as expected (quorumLength)
+		// - the combinations of shares should be unique (no repeats)
+		// - shares should all combine back to the same expected secret
+		cache := make(map[string]int)
+		for i, mnemonics := range groupCombinations {
+			/*
+				t.Logf("shareGroup %d mnemonics (%d):\n%s\n",
+					i, len(mnemonics), strings.Join(mnemonics, "\n"))
+			*/
+			// Check number of shares
+			if tc.quorumLength != 0 && len(mnemonics) != tc.quorumLength {
+				t.Errorf("shareGroup %d combinations (%d) != %d", i,
+					len(mnemonics), tc.quorumLength)
+			}
+			// Check uniqueness
+			sort.Strings(mnemonics)
+			key := strings.Join(mnemonics, "\n")
+			cache[key]++
+			if cache[key] > 1 {
+				t.Errorf("shareGroup %d combinations not unique (count == %d):\n%s",
+					i, cache[key], key)
+			}
+			// Check resultant secret
+			masterSecretBytes, err := CombineMnemonics(mnemonics)
+			if err != nil {
+				t.Fatal(err)
+			}
+			masterSecret := hex.EncodeToString(masterSecretBytes)
+			if masterSecret != secret {
+				t.Errorf("shareGroup %d combined to unexpected secret: got %q, want %q",
+					i, masterSecret, secret)
 			}
 		}
 	}
