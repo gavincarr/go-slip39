@@ -3,7 +3,6 @@ go-slip39
 
 [![PkgGoDev](https://pkg.go.dev/badge/gavincarr/go-slip39)](https://pkg.go.dev/github.com/gavincarr/go-slip39)
 [![MIT License](https://img.shields.io/github/license/gavincarr/go-slip39.svg?maxAge=2592000&color=blue)](https://github.com/gavincarr/go-slip39/blob/master/LICENCE)
-
 [![Go Build Status](https://github.com/gavincarr/go-slip39/actions/workflows/go.yml/badge.svg)](https://github.com/gavincarr/go-slip39/actions/workflows/go.yml/badge.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/gavincarr/go-slip39)](https://goreportcard.com/report/github.com/gavincarr/go-slip39)
 
@@ -16,6 +15,11 @@ distributed among participants, and requires a specified minimum number of
 parts to be supplied in order to reconstruct the original secret. Knowledge of
 fewer than the required number of parts does not leak information about the
 secret.
+
+Documentation
+-------------
+
+Package documentation can be found at [pkg.go.dev](https://pkg.go.dev/github.com/gavincarr/go-slip39).
 
 Specification
 -------------
@@ -38,9 +42,9 @@ CLI
 ---
 
 No executables are provided with this library. You can write your own tools
-pretty simply, or I have a sister project called
-[seedkit](https://github.com/gavincarr/seedkit/) which provides a CLI that
-makes use of this library.
+pretty simply, or there is a sister project called
+[seedkit](https://github.com/gavincarr/seedkit/) which provides a command
+line toolthat uses this library.
 
 Usage
 -----
