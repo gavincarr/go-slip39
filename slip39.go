@@ -442,7 +442,28 @@ func (sg ShareGroups) StringLabelled() (string, error) {
 	return sb.String(), nil
 }
 
+func checkLastWord(
+	numWords *int,
+	lastWord, incNum int,
+	incType, label string,
+) error {
+	if *numWords == 0 && lastWord != 0 {
+		if lastWord != 33 && lastWord != 20 {
+			return fmt.Errorf("bad label %q - %s %d has incremented, so lastWord should be 20 or 33, not %d",
+				label, incType, incNum, lastWord)
+		}
+		*numWords = lastWord
+	} else if lastWord != *numWords {
+		return fmt.Errorf("bad label %q - %s %d has incremented, so lastWord should be %d, not %d",
+			label, incType, incNum, *numWords, lastWord)
+	}
+	return nil
+}
+
+// checkBadLabel checks the sequencing between consecutive labels, and returns
+// an error if there is a problem.
 func checkBadLabel(
+	numWords *int,
 	groupNum, shareNum, wordNum, lastGroup, lastShare, lastWord int,
 	label, lastLabel, word string,
 ) error {
@@ -476,10 +497,20 @@ func checkBadLabel(
 			return fmt.Errorf("bad label %q - groupNum %d has incremented, so both shareNum and wordNum should be 1",
 				label, groupNum)
 		}
+		// Check lastword == numWords
+		err := checkLastWord(numWords, lastWord, groupNum, "groupNum", label)
+		if err != nil {
+			return err
+		}
 	} else if shareNum == lastShare+1 {
 		if wordNum != 1 {
 			return fmt.Errorf("bad label %q - shareNum %d has incremented, so wordNum should be 1",
 				label, shareNum)
+		}
+		// Check lastword == numWords
+		err := checkLastWord(numWords, lastWord, shareNum, "shareNum", label)
+		if err != nil {
+			return err
 		}
 	} else if wordNum != lastWord+1 {
 		if lastWord == 0 {
@@ -496,7 +527,7 @@ func checkBadLabel(
 // CombineLabelledShares converts a string containing a set of labelled shares,
 // one per line, in "<label> <word>" format, into a ShareGroups slice.
 // It checks that the labels are in a consistent format, and are consecutive
-// by group, share, and word order, and returns an error if not.
+// by group, share, and word order, or returns an error.
 func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 	groups := make(ShareGroups, 0)
 	group := make([]string, 0)
@@ -506,6 +537,8 @@ func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 	lastShare := 0
 	lastWord := 0
 	lastLabel := ""
+	label := ""
+	numWords := 0
 	for lineno, line := range lines {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) != 2 {
@@ -513,7 +546,7 @@ func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 				fmt.Errorf("invalid line %d %q - expected <label> <word>",
 					lineno+1, line)
 		}
-		label := fields[0]
+		label = fields[0]
 		word := fields[1]
 		if !reLabel.MatchString(label) {
 			return nil,
@@ -555,7 +588,7 @@ func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 		*/
 
 		// Check groupNum/shareNum/wordNum error conditions
-		err = checkBadLabel(groupNum, shareNum, wordNum,
+		err = checkBadLabel(&numWords, groupNum, shareNum, wordNum,
 			lastGroup, lastShare, lastWord, label, lastLabel, word)
 		if err != nil {
 			return nil, err
@@ -592,6 +625,13 @@ func CombineLabelledShares(labelledShares string) (ShareGroups, error) {
 		group = append(group, sharestr)
 		groups = append(groups, group)
 	}
+
+	// lastWord should always finish at 20 or 33
+	if lastWord != 20 && lastWord != 33 {
+		return nil, fmt.Errorf("bad label %q - lastWord should be 20 or 33, not %d",
+			label, lastWord)
+	}
+
 	return groups, nil
 }
 
@@ -1042,6 +1082,25 @@ func CollateShareGroups(mnemonics []string) (ShareGroups, error) {
 
 	shareGroups := make(ShareGroups, len(groups))
 	for _, k := range keys {
+		// Unfortunately shares do not include the MemberCount, so we can't
+		// easily tell if we have a full set of members. Best we can do is
+		// check whether the group length is equal to the max MemberIndex
+		/* FIXME
+		maxMemberIndex := 0
+		for _, share := range groups[k].shares {
+			if share.MemberIndex > maxMemberIndex {
+				maxMemberIndex = share.MemberIndex
+			}
+		}
+		// Check that group_length == maxMemberIndex
+		if len(groups[k].shares) != maxMemberIndex+1 {
+			//return nil, errors.New("incomplete set of shares?")
+			return nil, fmt.Errorf("incomplete set of shares? (mmi %d, shares %d)",
+				maxMemberIndex, len(groups[k].shares))
+		}
+		*/
+
+		// Add group mnemonics
 		mnemonics := make([]string, len(groups[k].shares))
 		for i, s := range groups[k].shares {
 			mnemonic, err := s.Mnemonic()

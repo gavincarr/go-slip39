@@ -767,6 +767,19 @@ func TestShareGroupsStringLabelled_Failures(t *testing.T) {
 			"010101 duckling\n0102 enlarge"},
 		{"Mixed-style labels",
 			"0101 duckling\n10102 enlarge"},
+		// Bad lastWord numbers
+		{"Bad lastword short 1",
+			"101 zoo\n"},
+		{"Bad lastword short 2",
+			"101 zoo\n102 zoo\n103 zoo\n104 zoo\n105 zoo\n106 zoo\n107 zoo\n108 zoo\n109 zoo\n110 zoo\n111 zoo\n112 zoo\n113 zoo\n114 zoo\n115 zoo\n116 zoo\n117 zoo\n118 zoo\n119 zoo\n120 zoo\n201 about\n"},
+		{"Bad lastword on share increment 1",
+			"101 zoo\n102 zoo\n103 zoo\n104 zoo\n105 zoo\n106 zoo\n107 zoo\n108 zoo\n109 zoo\n110 zoo\n111 zoo\n112 zoo\n113 zoo\n114 zoo\n115 zoo\n116 zoo\n117 zoo\n118 zoo\n119 zoo\n201 about\n"},
+		{"Bad lastword on share increment 2",
+			"101 zoo\n102 zoo\n103 zoo\n104 zoo\n105 zoo\n106 zoo\n107 zoo\n108 zoo\n109 zoo\n110 zoo\n111 zoo\n112 zoo\n113 zoo\n114 zoo\n115 zoo\n116 zoo\n117 zoo\n118 zoo\n119 zoo\n120 zoo\n121 zoo\n201 anchor\n"},
+		{"Bad lastword on group increment 1",
+			"1101 zoo\n1102 zoo\n1103 zoo\n1104 zoo\n1105 zoo\n1106 zoo\n1107 zoo\n1108 zoo\n1109 zoo\n1110 zoo\n1111 zoo\n1112 zoo\n1113 zoo\n1114 zoo\n1115 zoo\n1116 zoo\n1117 zoo\n1118 zoo\n1119 zoo\n2101 about\n"},
+		{"Bad lastword on group increment 2",
+			"1101 zoo\n1102 zoo\n1103 zoo\n1104 zoo\n1105 zoo\n1106 zoo\n1107 zoo\n1108 zoo\n1109 zoo\n1110 zoo\n1111 zoo\n1112 zoo\n1113 zoo\n1114 zoo\n1115 zoo\n1116 zoo\n1117 zoo\n1118 zoo\n1119 zoo\n1120 zoo\n1121zoo\n2101 anchor\n"},
 	}
 
 	for _, tc := range tests {
