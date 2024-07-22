@@ -53,7 +53,7 @@ const (
 	secretIndex        = 255   // The index of the shared secret share
 	digestIndex        = 254   // The index of the shared secret digest share
 
-	// Limit the combinatorial explosion possible with ValidateMnemomics
+	// Limit the combinatorial explosion possible with ValidateMnemonics
 	maxCombinations = 100
 )
 
@@ -1029,7 +1029,8 @@ func newShareGroupMap(mnemonics []string) (shareGroupMap, error) {
 	return groups, nil
 }
 
-// CollateShareGroups createa a ShareGroups slice from a slice of mnemonics,
+// CollateShareGroups creates a ShareGroups slice from a slice of mnemonics
+// representing a full set of shares, or returns an error.
 func CollateShareGroups(mnemonics []string) (ShareGroups, error) {
 	groups, err := newShareGroupMap(mnemonics)
 	if err != nil {

@@ -44,7 +44,7 @@ CLI
 No executables are provided with this library. You can write your own tools
 pretty simply, or there is a sister project called
 [seedkit](https://github.com/gavincarr/seedkit/) which provides a command
-line toolthat uses this library.
+line tool that uses this library.
 
 Usage
 -----
