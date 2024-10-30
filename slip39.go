@@ -19,7 +19,7 @@ import (
 	"strings"
 
 	mapset "github.com/deckarep/golang-set/v2"
-	"github.com/xdg-go/pbkdf2"
+	"golang.org/x/crypto/pbkdf2"
 	"golang.org/x/exp/maps"
 	"gonum.org/v1/gonum/stat/combin"
 )
